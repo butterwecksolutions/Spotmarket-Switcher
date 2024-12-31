@@ -378,7 +378,7 @@ if [ -f "$output_file" ]; then
     sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
     line_count=$(grep -v "^date_now_day" "$file11" | wc -l) # ignores day marker
     if [ "$line_count" -lt 24 ]; then
-        log_message >&2 "E:  $file11 has no price data for a complete day. Maybe API error. Please check XML data if hours are missing."
+        log_message >&2 "E:  Warning. $file11 has only price data for $line_count hours. Maybe API error. Please check XML data if hours are missing."
         log_message >&2 "E: Fallback to aWATTar API."
         select_pricing_api="1"
         use_awattar_api
@@ -396,10 +396,18 @@ if [ -f "$output_file" ]; then
         sort -g "$file8" > "$file19"
         timestamp=$(TZ=$TZ date +%d)
         echo "date_now_day: $timestamp" >> "$file8"
+
+        if [ -f "$file9" ]; then
+            line_count2=$(grep -v "^date_now_day" "$file9" | wc -l) # ignores day marker
+            if [ "$line_count2" -lt 24 ]; then
+                log_message >&2 "E:  Warning. $file9 has only price data for $line_count2 hours. Maybe API error. Please check XML data if hours are missing."
+            fi
+        fi
     else
         cp $file11 $file19  # If there's no second day, copy the sorted price file.
     fi
 fi
+
 
 
 }
@@ -561,12 +569,15 @@ use_entsoe_tomorrow_api() {
 
 get_entsoe_prices() {
     current_price=$(sed -n "${now_linenumber}p" "$file10")
+    
     for i in $(seq 1 $loop_hours); do
-        eval P$i=$(sed -n ${i}p "$file19")
+        eval P$i=$(sed -n "${i}p" "$file19" | grep -v "^date_now_day")
     done
-    highest_price=$(awk 'BEGIN {max = 0} $1>max {max=$1} END {print max}' "$file19")
-    average_price=$(awk 'NF>0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum+=$1; count++} END {if (count > 0) print sum/count}' "$file19")
+
+    highest_price=$(grep -v "^date_now_day" "$file19" | awk 'BEGIN {max = 0} $1 > max {max = $1} END {print max}')
+    average_price=$(grep -v "^date_now_day" "$file19" | awk 'NF > 0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum += $1; count++} END {if (count > 0) print sum / count}')
 }
+
 
 convert_vars_to_integer() {
     local potency="$1"
@@ -1381,8 +1392,6 @@ if [ "$include_second_day" = 1 ]; then
     elif [ "$select_pricing_api" = 3 ] && [ -f "$file17" ] && [ "$(wc -l <"$file17")" -gt 10 ]; then
         loop_hours=48
     fi
-	echo "Data available for $loop_hours hours."
-	
 
 fi
 
