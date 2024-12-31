@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.17-DEV"
+VERSION="2.4.18-DEV"
 
 set -e
 
@@ -373,8 +373,16 @@ END {
 }
 ' "$file"
 
+
 if [ -f "$output_file" ]; then
     sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
+    line_count=$(grep -v "^date_now_day" "$file11" | wc -l) # ignores day marker
+    if [ "$line_count" -lt 24 ]; then
+        log_message >&2 "E:  $file11 has no price data for a complete day. Maybe API error. Please check XML data if hours are missing."
+        log_message >&2 "E: Fallback to aWATTar API."
+        select_pricing_api="1"
+        use_awattar_api
+    fi
     timestamp=$(TZ=$TZ date +%d)
     echo "date_now_day: $timestamp" >> "$output_file"
 
@@ -392,6 +400,7 @@ if [ -f "$output_file" ]; then
         cp $file11 $file19  # If there's no second day, copy the sorted price file.
     fi
 fi
+
 
 }
 
@@ -1374,17 +1383,7 @@ if [ "$include_second_day" = 1 ]; then
     fi
 	echo "Data available for $loop_hours hours."
 	
-	if [ "$select_pricing_api" -eq 3 ] && [ "$loop_hours" -eq 24 ] && [ "$getnow" -ge 13 ] && [ "$include_second_day" -eq 1 ]; then
-		log_message >&2 "E: Next day prices delayed at Tibber API. Waiting 120 seconds and fallback to aWATTar API. Please ask the Tibber-Team, to get better and to overtake the faster aWATTar API at the data retrieval race."
-		sleep 120
-		select_pricing_api="1"
-		use_awattar_api
-		use_awattar_tomorrow_api
-		if [ -f "$file2" ] && [ "$(wc -l <"$file2")" -gt 10 ]; then
-        loop_hours=48
-		fi
-	fi
-	
+
 fi
 
 fetch_prices
@@ -1421,29 +1420,67 @@ log_message >&2 "I: Sorted prices: $price_table"
 if [ "$include_second_day" -eq 1 ]; then
     price_count=$(echo "$price_table" | grep -oE '[0-9]+:[0-9]+\.[0-9]+' | wc -l)
     if [ "$price_count" -le 25 ]; then
-        current_hour=$(date +%H)
-        if [ "$current_hour" -eq 13 ]; then
-			log_message >&2 "I: time is > 13:00 and price data delayed. $price_count prices available. Extra checking and waiting for new prices every 5 minutes..."
-            while [ "$current_hour" -eq 13 ]; do
-			fetch_prices
-			price_table=""
-			for i in $(seq 1 $loop_hours); do
-				eval price=\$P$i
-				price_table+="$i:$price "
+        current_hour=$(TZ=$TZ date +%H)
+        if [ "$current_hour" -ge 13 ]; then
+            log_message >&2 "I: time is > 13:00 and price data delayed. $price_count prices available. Trying to check other APIs too (5 retries with 5 minutes pause)..."
+retry_count=0
+max_retries=5
+while [ "$current_hour" -ge 13 ]; do
+    for api in "awattar-API" "entsoe-API" "tibber-API"; do
+        log_message >&2 "E: Trying $api for prices."
+        price_table=""
+        case "$api" in
+            "awattar-API")
+                select_pricing_api="1"
+                use_awattar_api
+                use_awattar_tomorrow_api
+                ;;
+            "entsoe-API")
+                select_pricing_api="2"
+                rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"                
+                use_entsoe_api
+                ;;
+            "tibber-API")
+                select_pricing_api="3"
+                use_tibber_api
+                use_tibber_tomorrow_api
+                ;;
+        esac
+        fetch_prices
+        price_table=""
+        for i in $(seq 1 $loop_hours); do
+            eval price=\$P$i
+            price_table+="$i:$price "
 
-				if [ $((i % 12)) -eq 0 ]; then
-				price_table+="\n                  "
-				fi
-			done
-			log_message >&2 "I: Sorted prices: $price_table"
-			price_count=$(echo "$price_table" | grep -oE '[0-9]+:[0-9]+\.[0-9]+' | wc -l)
-                if [ "$price_count" -gt 24 ]; then
-                    break
-                else
-                    sleep 300
-                fi
-                current_hour=$(date +%H)
-            done
+            if [ $((i % 12)) -eq 0 ]; then
+                price_table+="\n                  "
+            fi
+        done
+
+        price_count=$(echo "$price_table" | grep -oE '[0-9]+:[0-9]+\.[0-9]+' | wc -l)
+        log_message >&2 "I: $api returned $price_count prices."
+        
+        if [ -n "$price_table" ]; then
+            log_message >&2 "I: $api sorted prices: $price_table"
+        else
+            log_message >&2 "E: $api did not return valid prices."
+        fi
+
+        if [ "$price_count" -gt 24 ]; then
+            break 2
+        fi
+    done
+
+    retry_count=$((retry_count + 1))
+    if [ "$retry_count" -ge "$max_retries" ]; then
+        log_message >&2 "E: All retries exhausted. Exiting..."
+        break 2
+    fi
+
+    log_message >&2 "I: Prices still delayed. Waiting 5 minutes..."
+    sleep 300
+    current_hour=$(date +%H)
+done
         fi
     fi
 fi
@@ -1751,6 +1788,9 @@ if ((use_solarweather_api_to_abort == 1)); then
     fi
 
 fi
+
+echo $link3
+
 if ((reenable_inverting_at_fullbatt == 1)); then
 if (( $SOC_percent >= reenable_inverting_at_soc )); then
     log_message >&2 "I: The battery is getting full. Re-enabling inverter. This is important on a DC-AC system to enable grid-feedin."
