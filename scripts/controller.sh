@@ -319,27 +319,49 @@ download_entsoe_prices() {
 
     if [ -n "$DEBUG" ]; then log_message "D: No delay of download of entsoe data since DEBUG variable set." "D: Entsoe file '$file' with price data downloaded"; fi
 
-    awk '
-	            error_found=0
+awk '
+BEGIN {
+    capture_period = 0
+    valid_period = 0
+    in_reason = 0
+    prices = ""
+    error_code = ""
+    error_message = ""
+    last_price = ""
+    current_position = 1
+    max_positions = 24
+    for (i = 1; i <= max_positions; i++) {
+        positions[i] = ""
+    }
+}
+
 /<Period>/ {
     capture_period = 1
 }
+
 /<\/Period>/ {
     capture_period = 0
+    valid_period = 0
 }
+
 capture_period && /<resolution>PT60M<\/resolution>/ {
     valid_period = 1
 }
-valid_period && /<price.amount>/ {
-    gsub("<price.amount>", "", $0)
-    gsub("<\/price.amount>", "", $0)
+
+valid_period && /<position>/ {
+    gsub("<position>", "", $0)
+    gsub("</position>", "", $0)
     gsub(/^[\t ]+|[\t ]+$/, "", $0)
-    prices = prices $0 ORS
-}
-valid_period && /<\/Period>/ {
-    exit
+    current_position = $0
 }
 
+valid_period && /<price.amount>/ {
+    gsub("<price.amount>", "", $0)
+    gsub("</price.amount>", "", $0)
+    gsub(/^[\t ]+|[\t ]+$/, "", $0)
+    last_price = $0
+    positions[current_position] = last_price
+}
 
 /<Reason>/ {
     in_reason = 1
@@ -354,7 +376,7 @@ in_reason && /<code>/ {
 
 in_reason && /<text>/ {
     gsub(/<text>|<\/text>/, "")
-	gsub(/^[\t ]+|[\t ]+$/, "", $0)
+    gsub(/^[\t ]+|[\t ]+$/, "", $0)
     error_message = $0
 }
 
@@ -363,6 +385,15 @@ in_reason && /<text>/ {
 }
 
 END {
+    for (i = 1; i <= max_positions; i++) {
+        if (positions[i] == "") {
+            positions[i] = (i == 1 ? last_price : positions[i-1])
+        }
+        if (positions[i] != "") {
+            prices = prices positions[i] ORS
+        }
+    }
+
     if (error_code == 999) {
         print "E: Entsoe data retrieval error found in the XML data:", error_message
     } else if (prices != "") {
@@ -373,10 +404,9 @@ END {
 }
 ' "$file"
 
-
 if [ -f "$output_file" ]; then
     sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
-    line_count=$(grep -v "^date_now_day" "$file11" | wc -l) # ignores day marker
+    line_count=$(grep -v "^date_now_day" "$file11" | wc -l)
     if [ "$line_count" -lt 24 ]; then
         log_message >&2 "E:  Warning. $file11 has only price data for $line_count hours. Maybe API error. Please check XML data if hours are missing."
         log_message >&2 "E: Fallback to aWATTar API."
@@ -571,11 +601,11 @@ get_entsoe_prices() {
     current_price=$(sed -n "${now_linenumber}p" "$file10")
     
     for i in $(seq 1 $loop_hours); do
-        eval P$i=$(sed -n "${i}p" "$file19" | grep -v "^date_now_day")
+        eval P$i=$(tail -n +1 "$file19" | sed -n "${i}p")
     done
 
-    highest_price=$(grep -v "^date_now_day" "$file19" | awk 'BEGIN {max = 0} $1 > max {max = $1} END {print max}')
-    average_price=$(grep -v "^date_now_day" "$file19" | awk 'NF > 0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum += $1; count++} END {if (count > 0) print sum / count}')
+    highest_price=$(tail -n +1 "$file19" | awk 'BEGIN {max = 0} $1 > max {max = $1} END {print max}')
+    average_price=$(tail -n +1 "$file19" | awk 'NF > 0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum += $1; count++} END {if (count > 0) print sum / count}')
 }
 
 
