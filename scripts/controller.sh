@@ -1019,57 +1019,76 @@ fetch_prices() {
     fi
 }
 
-
 ignore_past_prices() {
     if (( ignore_past_hours == 1 )); then
+        # Get the current hour in the specified timezone
         current_hour=$(TZ=$TZ date +%H)
         current_hour=$((10#$current_hour))
         lines_to_skip=$((current_hour))
         
         if [ "$select_pricing_api" -eq 1 ]; then
-            # aWATTar API
-            if [ "$include_second_day" -eq 1 ]; then
-                total_lines=48
+            # Handle aWATTar API
+            # Count the number of available price lines excluding the date marker
+            available_lines=$(grep -v "date_now_day" "$file6" | wc -l)
+            if [ "$available_lines" -eq 0 ]; then
+                log_message >&2 "E: No price data available in $file6."
+                loop_hours=0
+            elif [ "$lines_to_skip" -ge "$available_lines" ]; then
+                log_message >&2 "W: All $available_lines prices are in the past. No future prices available."
+                loop_hours=0
             else
-                total_lines=24
-            fi
-            if [ "$lines_to_skip" -gt 0 ]; then
-                grep -v "date_now_day" "$file6" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file6.tmp"
+                # Remove past hours from price data
+                grep -v "date_now_day" "$file6" | tail -n +"$((lines_to_skip + 1))" > "$file6.tmp"
                 mv "$file6.tmp" "$file6"
+                # Sort remaining prices and update the output file
                 grep -v "date_now_day" "$file6" | sort -g > "$file7"
                 echo "date_now_day: $(TZ=$TZ date +%d)" >> "$file7"
+                loop_hours=$(grep -v "date_now_day" "$file6" | wc -l)
+                log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
             fi
-            loop_hours=$(grep -v "date_now_day" "$file6" | wc -l)
         elif [ "$select_pricing_api" -eq 2 ]; then
-            # Entsoe API
-            if [ "$include_second_day" -eq 1 ]; then
-                total_lines=48
+            # Handle Entsoe API
+            # Count the number of available price lines excluding the date marker
+            available_lines=$(grep -v "date_now_day" "$file8" | wc -l)
+            if [ "$available_lines" -eq 0 ]; then
+                log_message >&2 "E: No price data available in $file8."
+                loop_hours=0
+            elif [ "$lines_to_skip" -ge "$available_lines" ]; then
+                log_message >&2 "W: All $available_lines prices are in the past. No future prices available."
+                loop_hours=0
             else
-                total_lines=24
-            fi
-            if [ "$lines_to_skip" -gt 0 ]; then
-                grep -v "date_now_day" "$file8" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file8.tmp"
+                # Remove past hours from price data
+                grep -v "date_now_day" "$file8" | tail -n +"$((lines_to_skip + 1))" > "$file8.tmp"
                 mv "$file8.tmp" "$file8"
+                # Sort remaining prices and update the output file
                 grep -v "date_now_day" "$file8" | sort -g > "$file19"
                 echo "date_now_day: $(TZ=$TZ date +%d)" >> "$file19"
+                loop_hours=$(grep -v "date_now_day" "$file8" | wc -l)
+                log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
             fi
-            loop_hours=$(grep -v "date_now_day" "$file8" | wc -l)
         elif [ "$select_pricing_api" -eq 3 ]; then
-            # Tibber API
-            if [ "$include_second_day" -eq 1 ]; then
-                total_lines=48
+            # Handle Tibber API
+            # Count the number of available price lines excluding the date marker
+            available_lines=$(grep -v "date_now_day" "$file12" | wc -l)
+            if [ "$available_lines" -eq 0 ]; then
+                log_message >&2 "E: No price data available in $file12."
+                loop_hours=0
+            elif [ "$lines_to_skip" -ge "$available_lines" ]; then
+                log_message >&2 "W: All $available_lines prices are in the past. No future prices available."
+                loop_hours=0
             else
-                total_lines=24
-            fi
-            if [ "$lines_to_skip" -gt 0 ]; then
-                grep -v "date_now_day" "$file12" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file12.tmp"
+                # Remove past hours from price data
+                grep -v "date_now_day" "$file12" | tail -n +"$((lines_to_skip + 1))" > "$file12.tmp"
                 mv "$file12.tmp" "$file12"
+                loop_hours=$(grep -v "date_now_day" "$file12" | wc -l)
+                log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
             fi
-            loop_hours=$(grep -v "date_now_day" "$file12" | wc -l)
         fi
         
-        if [ "$lines_to_skip" -gt 0 ]; then
-            log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
+        # Check if there are any remaining hours to process
+        if [ "$loop_hours" -eq 0 ]; then
+            log_message >&2 "E: No future prices available after ignoring past hours. Script will be terminated."
+            exit 1
         fi
     fi
 }
