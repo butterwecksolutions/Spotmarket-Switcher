@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.18-DEV"
+VERSION="2.4.19-DEV"
 
 set -e
 
@@ -18,7 +18,7 @@ if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
     valid_config_version=9 # Please increase this value by 1 when changing the configuration variables
 else
     declare -A valid_vars=(
-    	["config_version"]="9" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
+    	["config_version"]="10" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
         ["use_fritz_dect_sockets"]="0|1"
         ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
         ["user"]="string"
@@ -44,6 +44,7 @@ else
         ["TZ"]="string"
         ["select_pricing_api"]="1|2|3"
         ["include_second_day"]="0|1"
+        ["ignore_past_hours"]="0|1"
         ["use_solarweather_api_to_abort"]="0|1"
         ["abort_solar_yield_today"]="[0-9]+(\.[0-9]+)?"
         ["abort_solar_yield_tomorrow"]="[0-9]+(\.[0-9]+)?"
@@ -220,6 +221,7 @@ fi
 
     sort -g "$output_file" >"${output_file%.*}_sorted.${output_file##*.}"
     timestamp=$(TZ=$TZ date +%d)
+    echo "date_now_day: $timestamp" >>"$file"
     echo "date_now_day: $timestamp" >>"$output_file"
     echo "date_now_day: $timestamp" >>"${output_file%.*}_sorted.${output_file##*.}"
 
@@ -260,18 +262,20 @@ download_tibber_prices() {
     fi
 
     sed -n '/"today":/,/"tomorrow":/p' "$file" | sed '$d' | sed '/"today":/d' >"$file15"
-    sort -t, -k1.9n $file15 >"$file16"
+    sort -t, -k1.9n "$file15" >"$file16"
     sed -n '/"tomorrow":/,$p' "$file" | sed '/"tomorrow":/d' >"$file17"
-    sort -t, -k1.9n $file17 >"$file18"
+    sort -t, -k1.9n "$file17" >"$file18"
     if [ "$include_second_day" = 0 ]; then
         cp "$file16" "$file12"
     else
-    sed -n '4,$p' "$file14" | grep '"total"' | sort -t':' -k2 -n > "$file12"
+        cat "$file16" "$file18" > "$file12"
     fi
 
     timestamp=$(TZ=$TZ date +%d)
+    echo "date_now_day: $timestamp" >>"$file"
     echo "date_now_day: $timestamp" >>"$file15"
     echo "date_now_day: $timestamp" >>"$file17"
+    echo "date_now_day: $timestamp" >>"$file12"
 
     if [ ! -s "$file16" ]; then
         log_message >&2 "E: Tibber prices cannot be extracted to '$file16', please check your internet connection and Tibber API Key. Waiting 120 seconds and fallback to aWATTar API."
@@ -406,26 +410,28 @@ END {
 
 if [ -f "$output_file" ]; then
     sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
-    line_count=$(grep -v "^date_now_day" "$file11" | wc -l)
+    line_count=$(grep -v "^date_now_day" "$output_file" | wc -l)
     if [ "$line_count" -lt 24 ]; then
-        log_message >&2 "E:  Warning. $file11 has only price data for $line_count hours. Maybe API error. Please check XML data if hours are missing."
+        log_message >&2 "E:  Warning. $output_file has only price data for $line_count hours. Maybe API error. Please check XML data if hours are missing."
         log_message >&2 "E: Fallback to aWATTar API."
         select_pricing_api="1"
         use_awattar_api
     fi
     timestamp=$(TZ=$TZ date +%d)
-    echo "date_now_day: $timestamp" >> "$output_file"
+    echo "date_now_day: $timestamp" >>"$file"
+    echo "date_now_day: $timestamp" >>"$output_file"
+    echo "date_now_day: $timestamp" >>"${output_file%.*}_sorted.${output_file##*.}"
 
     # Check if the file for tomorrow contains prices for the next day
     if [ "$include_second_day" = 1 ] && grep -q "PT60M" "$file" && [ "$(wc -l <"$output_file")" -gt 3 ]; then
-        cat $file10 > $file8
+        cat "$file10" > "$file8"
         if [ -f "$file13" ]; then
             cat "$file13" >> "$file8"
         fi
         sed -i '25d;50d' "$file8"
         sort -g "$file8" > "$file19"
         timestamp=$(TZ=$TZ date +%d)
-        echo "date_now_day: $timestamp" >> "$file8"
+        echo "date_now_day: $timestamp" >>"$file8"
 
         if [ -f "$file9" ]; then
             line_count2=$(grep -v "^date_now_day" "$file9" | wc -l) # ignores day marker
@@ -434,12 +440,9 @@ if [ -f "$output_file" ]; then
             fi
         fi
     else
-        cp $file11 $file19  # If there's no second day, copy the sorted price file.
+        cp "$file11" "$file19"  # If there's no second day, copy the sorted price file.
     fi
 fi
-
-
-
 }
 
 download_solarenergy() {
@@ -467,7 +470,6 @@ download_solarenergy() {
 		fi
 	fi
 
-
         if [ -n "$DEBUG" ]; then
             log_message "D: File3 $file3 downloaded"
         fi
@@ -480,8 +482,8 @@ download_solarenergy() {
     fi
 }
 
-get_current_awattar_day() { current_awattar_day=$(sed -n 3p $file1 | grep -Eo '[0-9]+'); }
-get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p $file2 | grep -Eo '[0-9]+'); }
+get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo '[0-9]+'); }
+get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
 
 use_awattar_api() {
     # Test if Awattar today data exists
@@ -492,7 +494,7 @@ use_awattar_api() {
             log_message >&2 "I: aWATTar today-data is up to date." false
         else
             log_message >&2 "I: aWATTar today-data is outdated, fetching new data." false
-            rm -f $file1 $file6 $file7
+            rm -f "$file1" "$file6" "$file7"
             download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
         fi
     else # Data file1 does not exist
@@ -510,7 +512,7 @@ use_awattar_tomorrow_api() {
                 log_message >&2 "I: aWATTar tomorrow-data is up to date." false
             else
                 log_message >&2 "I: aWATTar tomorrow-data is outdated, fetching new data." false
-                rm -f $file3
+                rm -f "$file2"
                 download_awattar_prices "$link2" "$file2" "$file6" $((RANDOM % 21 + 10))
             fi
         else # Data file2 does not exist
@@ -521,9 +523,9 @@ use_awattar_tomorrow_api() {
 	
 
 get_awattar_prices() {
-    current_price=$(sed -n "$((now_linenumber))p" "$file6")
-    for i in $(seq 1 $loop_hours); do
-        eval "P$i=$(sed -n "${i}p" "$file7")"
+    current_price=$(sed -n "$((now_linenumber))p" "$file6" | grep -v "date_now_day")
+    for i in $(seq 1 "$loop_hours"); do
+        eval "P$i=$(sed -n "${i}p" "$file7" | grep -v "date_now_day")"
     done
     highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | tail -n1)
     average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
@@ -553,17 +555,16 @@ use_tibber_tomorrow_api() {
             log_message >&2 "I: File '$file18' has no tomorrow data, we have to try it again until the new prices are online." false
             rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
             download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-            sort -t, -k1.9n $file17 >>"$file12"
         fi
 	}
 
 get_tibber_prices() {
-    current_price=$(sed -n "${now_linenumber}s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file15")
-    for i in $(seq 1 $loop_hours); do
-        eval "P$i=$(sed -n "${i}s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12")"
+    current_price=$(sed -n "${now_linenumber}s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file15" | grep -v "date_now_day")
+    for i in $(seq 1 "$loop_hours"); do
+        eval "P$i=$(sed -n "${i}s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day")"
     done
-    highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | awk 'BEGIN {max = 0} {if ($1 > max) max = $1} END {print max}')
-    average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | awk '{sum += $1} END {print sum/NR}')
+    highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk 'BEGIN {max = 0} {if ($1 > max) max = $1} END {print max}')
+    average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum += $1} END {print sum/NR}')
 }
 
 get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo '[0-9]+'); }
@@ -598,16 +599,13 @@ use_entsoe_tomorrow_api() {
 		}
 
 get_entsoe_prices() {
-    current_price=$(sed -n "${now_linenumber}p" "$file10")
-    
-    for i in $(seq 1 $loop_hours); do
-        eval P$i=$(tail -n +1 "$file19" | sed -n "${i}p")
+    current_price=$(sed -n "${now_linenumber}p" "$file10" | grep -v "date_now_day")
+    for i in $(seq 1 "$loop_hours"); do
+        eval "P$i=$(tail -n +1 "$file19" | sed -n "${i}p" | grep -v "date_now_day")"
     done
-
-    highest_price=$(tail -n +1 "$file19" | awk 'BEGIN {max = 0} $1 > max {max = $1} END {print max}')
-    average_price=$(tail -n +1 "$file19" | awk 'NF > 0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum += $1; count++} END {if (count > 0) print sum / count}')
+    highest_price=$(tail -n +1 "$file19" | grep -v "date_now_day" | awk 'BEGIN {max = 0} $1 > max {max = $1} END {print max}')
+    average_price=$(tail -n +1 "$file19" | grep -v "date_now_day" | awk 'NF > 0 && $1 ~ /^[0-9]*(\.[0-9]*)?$/ {sum += $1; count++} END {if (count > 0) print sum / count}')
 }
-
 
 convert_vars_to_integer() {
     local potency="$1"
@@ -623,32 +621,32 @@ convert_vars_to_integer() {
 }
 
 get_awattar_prices_integer() {
-    local price_vars=""
-    for i in $(seq 1 $loop_hours); do
-        price_vars+="P$i "
+    local price_vars=()
+    for i in $(seq 1 "$loop_hours"); do
+        price_vars+=("P$i")
     done
-    price_vars+="average_price highest_price current_price start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh"
-    convert_vars_to_integer 15 $price_vars
+    price_vars+=(average_price highest_price current_price start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh)
+    convert_vars_to_integer 15 "${price_vars[@]}"
 }
 
 get_tibber_prices_integer() {
-    local price_vars=""
-    for i in $(seq 1 $loop_hours); do
-        price_vars+="P$i "
+    local price_vars=()
+    for i in $(seq 1 "$loop_hours"); do
+        price_vars+=("P$i")
     done
-    price_vars+="average_price highest_price current_price"
-    convert_vars_to_integer 17 $price_vars
+    price_vars+=(average_price highest_price current_price)
+    convert_vars_to_integer 17 "${price_vars[@]}"
 
     convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
 }
 
 get_prices_integer_entsoe() {
-    local price_vars=""
-    for i in $(seq 1 $loop_hours); do
-        price_vars+="P$i "
+    local price_vars=()
+    for i in $(seq 1 "$loop_hours"); do
+        price_vars+=("P$i")
     done
-    price_vars+="average_price highest_price current_price"
-    convert_vars_to_integer 14 $price_vars
+    price_vars+=(average_price highest_price current_price)
+    convert_vars_to_integer 14 "${price_vars[@]}"
 
     convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
 }
@@ -750,7 +748,7 @@ is_charging_economical() {
 
     if [ -n "$DEBUG" ]; then
         log_message "D: is_charging_economical [ $is_economical - $([ "$is_economical" -eq 1 ] && echo "false" || echo "true") ]."
-        reference_price_euro=$(millicentToEuro $reference_price)
+        reference_price_euro=$(millicentToEuro "$reference_price")
         total_cost_euro=$(millicentToEuro "$total_cost")
         is_economical_str=$([ "$is_economical" -eq 1 ] && echo "false" || echo "true")
         log_message "D: if [ reference_price $reference_price_euro > total_cost $total_cost_euro ] result is $is_economical_str."
@@ -793,8 +791,6 @@ get_target_soc() {
 
     echo "No target SoC found."
 }
-
-
 
 # Function to manage charging
 manage_charging() {
@@ -919,7 +915,7 @@ millicentToEuro() {
     local euro_main_part=$((millicents / EURO_FACTOR))
     local euro_decimal_part=$(((millicents % EURO_FACTOR) / DECIMAL_FACTOR))
 
-    printf "%d.%04d\n" $euro_main_part $euro_decimal_part
+    printf "%d.%04d\n" "$euro_main_part" "$euro_decimal_part"
 }
 
 euroToMillicent() {
@@ -981,7 +977,7 @@ exit_with_cleanup() {
     fi
     manage_fritz_sockets "off"
     manage_shelly_sockets "off"
-    exit $1
+    exit "$1"
 }
 
 checkAndClean() {
@@ -998,12 +994,12 @@ checkAndClean() {
     fi
     difference1=$(( (currentTime - lastModified1) / 60 ))
     difference2=$(( (currentTime - lastModified2) / 60 ))
-    if [ $difference1 -lt 60 ] || [ $difference2 -lt 60 ]; then
+    if [ "$difference1" -lt 60 ] || [ "$difference2" -lt 60 ]; then
         log_message >&2 "I: Config or Controller was changed within the last 60 minutes. Cleaning /tmp directory."
         rm -f /tmp/tibber*.*
         rm -f /tmp/awattar*.*
 		rm -f /tmp/entsoe*.*
-		rm -f $file3
+		rm -f "$file3"
     fi
 }
 
@@ -1020,6 +1016,61 @@ fetch_prices() {
         Unit="EUR/kWh $price_unit price"
         get_tibber_prices
         get_tibber_prices_integer
+    fi
+}
+
+
+ignore_past_prices() {
+    if (( ignore_past_hours == 1 )); then
+        current_hour=$(TZ=$TZ date +%H)
+        current_hour=$((10#$current_hour))
+        lines_to_skip=$((current_hour))
+        
+        if [ "$select_pricing_api" -eq 1 ]; then
+            # aWATTar API
+            if [ "$include_second_day" -eq 1 ]; then
+                total_lines=48
+            else
+                total_lines=24
+            fi
+            if [ "$lines_to_skip" -gt 0 ]; then
+                grep -v "date_now_day" "$file6" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file6.tmp"
+                mv "$file6.tmp" "$file6"
+                grep -v "date_now_day" "$file6" | sort -g > "$file7"
+                echo "date_now_day: $(TZ=$TZ date +%d)" >> "$file7"
+            fi
+            loop_hours=$(grep -v "date_now_day" "$file6" | wc -l)
+        elif [ "$select_pricing_api" -eq 2 ]; then
+            # Entsoe API
+            if [ "$include_second_day" -eq 1 ]; then
+                total_lines=48
+            else
+                total_lines=24
+            fi
+            if [ "$lines_to_skip" -gt 0 ]; then
+                grep -v "date_now_day" "$file8" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file8.tmp"
+                mv "$file8.tmp" "$file8"
+                grep -v "date_now_day" "$file8" | sort -g > "$file19"
+                echo "date_now_day: $(TZ=$TZ date +%d)" >> "$file19"
+            fi
+            loop_hours=$(grep -v "date_now_day" "$file8" | wc -l)
+        elif [ "$select_pricing_api" -eq 3 ]; then
+            # Tibber API
+            if [ "$include_second_day" -eq 1 ]; then
+                total_lines=48
+            else
+                total_lines=24
+            fi
+            if [ "$lines_to_skip" -gt 0 ]; then
+                grep -v "date_now_day" "$file12" | tail -n +"$((lines_to_skip + 1))" | head -n "$((total_lines - lines_to_skip))" > "$file12.tmp"
+                mv "$file12.tmp" "$file12"
+            fi
+            loop_hours=$(grep -v "date_now_day" "$file12" | wc -l)
+        fi
+        
+        if [ "$lines_to_skip" -gt 0 ]; then
+            log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
+        fi
     fi
 }
 
@@ -1119,20 +1170,20 @@ send_keepalive_for_charger2() {
     send_keepalive_for_charger2 &
     keepalive_pid=$!
 
-SOC_percent=$(mosquitto_sub -h $venus_os_mqtt_ip -p $venus_os_mqtt_port -t $MQTT_TOPIC_SUB -C 1 | grep -o '"value":[^,]*' | sed 's/"value"://' | cut -d '.' -f 1)
+SOC_percent=$(mosquitto_sub -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -t "$MQTT_TOPIC_SUB" -C 1 | grep -o '"value":[^,]*' | sed 's/"value"://' | cut -d '.' -f 1)
 charger_command_charge() {
 	log_message >&2 "I: Executing mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p $venus_os_mqtt_port -m "{\"value\":7}""
-    mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p $venus_os_mqtt_port -m "{\"value\":7}"
+    mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":7}"
 }
 
 charger_command_stop_charging() {
 	log_message >&2 "I: Executing mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p $venus_os_mqtt_port -m "{\"value\":-7}""
-    mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p $venus_os_mqtt_port -m "{\"value\":-7}"
+    mosquitto_pub -t "$MQTT_TOPIC_SUB_STOP_CHARGE" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":-7}"
 }
 
 charger_command_set_SOC_target() {
 	log_message >&2 "I: Executing mosquitto_pub -t $MQTT_TOPIC_SUB_SET_SOC -h $venus_os_mqtt_ip -p $venus_os_mqtt_port -m \"{\"value\":$target_soc}\""
-    mosquitto_pub -t $MQTT_TOPIC_SUB_SET_SOC -h $venus_os_mqtt_ip -p $venus_os_mqtt_port -m "{\"value\":$target_soc}"
+    mosquitto_pub -t "$MQTT_TOPIC_SUB_SET_SOC" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":$target_soc}"
 }
 
 charger_disable_inverter() {
@@ -1146,7 +1197,6 @@ charger_enable_inverter() {
 }
 
 fi
-
 
 # other MQTT Charger
 if [ "$use_charger" == "3" ]; then
@@ -1195,7 +1245,6 @@ charger_enable_inverter() {
 	log_message >&2 "I: Executing mosquitto_pub -h "$mqtt_broker_host_publish" -p "$mqtt_broker_port_publish" -t "$mqtt_broker_topic_publish/charger_inverter" -m true"
     mosquitto_pub -h "$mqtt_broker_host_publish" -p "$mqtt_broker_port_publish" -t "$mqtt_broker_topic_publish/charger_inverter" -m true
 }
-
 
 if [ -z "$mqtt_broker_host_subscribe" ] || [ -z "$mqtt_broker_port_subscribe" ] || [ -z "$mqtt_broker_topic_subscribe" ]; then
     log_message >&2 "E: Error. MQTT subscribe variables are not fully configured."
@@ -1283,7 +1332,7 @@ for tool in $tools; do
     fi
 done
 
-if [ $num_tools_missing -gt 0 ]; then
+if [ "$num_tools_missing" -gt 0 ]; then
     log_message >&2 "E: $num_tools_missing tools are missing."
     exit 127
 fi
@@ -1398,19 +1447,12 @@ fi
 if ((include_second_day == 1)); then
 
     if ((select_pricing_api == 1)); then
-
-use_awattar_tomorrow_api
-
+        use_awattar_tomorrow_api
     elif ((select_pricing_api == 2)); then
-
-use_entsoe_tomorrow_api
-
+        use_entsoe_tomorrow_api
     elif ((select_pricing_api == 3)); then
-
-use_tibber_tomorrow_api
-
-fi
-
+        use_tibber_tomorrow_api
+    fi
 fi # Include second day
 
 loop_hours=24
@@ -1422,10 +1464,11 @@ if [ "$include_second_day" = 1 ]; then
     elif [ "$select_pricing_api" = 3 ] && [ -f "$file17" ] && [ "$(wc -l <"$file17")" -gt 10 ]; then
         loop_hours=48
     fi
-
 fi
 
 fetch_prices
+
+ignore_past_prices
 
 if ((use_solarweather_api_to_abort == 1)); then
     download_solarenergy
@@ -1447,7 +1490,7 @@ log_message >&2 "I: Current price is $current_price $Unit."
 log_message >&2 "I: The average price will be $average_price $Unit."
 log_message >&2 "I: Highest price will be $highest_price $Unit."
 price_table=""
-for i in $(seq 1 $loop_hours); do
+for i in $(seq 1 "$loop_hours"); do
     eval price=\$P$i
     price_table+="$i:$price "
 
@@ -1487,7 +1530,7 @@ while [ "$current_hour" -ge 13 ]; do
         esac
         fetch_prices
         price_table=""
-        for i in $(seq 1 $loop_hours); do
+        for i in $(seq 1 "$loop_hours"); do
             eval price=\$P$i
             price_table+="$i:$price "
 
@@ -1554,7 +1597,7 @@ if [ "$loop_hours" = 24 ]; then
         declare "$charge_var_name=$charge_value"
         declare "$switchable_sockets_var_name=$switchable_sockets_value"
 
-    if [ $SOC_percent -ge $discharge_value ]; then
+    if [ "$SOC_percent" -ge "$discharge_value" ]; then
         declare "$discharge_var_name=1"
 		if [ -n "$DEBUG" ]; then
         log_message "D: $discharge_var_name=1"
@@ -1601,7 +1644,7 @@ done
 	
 fi
 	
-if [ "$loop_hours" = 48 ]; then
+if [ "$loop_hours" -gt 24 ]; then
 	    # Separate arrays for each column
     config_matrix48_charge=()
     config_matrix48_discharge=()
@@ -1735,7 +1778,7 @@ evaluate_conditions() {
 
     for index in "${!conditions[@]}"; do
         if ((conditions[index])) && [[ $condition_met -eq 0 ]]; then
-            eval $execute_ref_name=1
+            eval "$execute_ref_name=1"
 			eval "$condition_met_ref_name='${descriptions[index]}'"
             condition_met=1
             [[ $DEBUG -ne 1 ]] && break
@@ -1807,7 +1850,6 @@ if ((use_solarweather_api_to_abort == 1)); then
     
     if [ ! -s "$file3" ]; then 
         log_message >&2 "E: File '$file3' does not exist or is empty."
-        return
     fi
 
     if ((abort_solar_yield_today_integer <= solarenergy_today_integer)) && ((abort_solar_yield_tomorrow_integer <= solarenergy_tomorrow_integer)); then
@@ -1828,7 +1870,7 @@ if ((use_solarweather_api_to_abort == 1)); then
 
 fi
 
-echo $link3
+echo "$link3"
 
 if ((reenable_inverting_at_fullbatt == 1)); then
 if (( $SOC_percent >= reenable_inverting_at_soc )); then
@@ -1857,9 +1899,9 @@ if ((execute_charging == 1 && use_charger != 0)); then
 
     if [ "$economic_check" -eq 0 ]; then
         manage_charging "on" "Economical check was not activated. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-    elif [ "$economic_check" -eq 1 ] && is_charging_economical $highest_price_integer $total_cost_integer; then
+    elif [ "$economic_check" -eq 1 ] && is_charging_economical "$highest_price_integer" "$total_cost_integer"; then
         manage_charging "on" "Charging based on highest price ($(millicentToEuro "$highest_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-    elif [ "$economic_check" -eq 2 ] && is_charging_economical $average_price_integer $total_cost_integer; then
+    elif [ "$economic_check" -eq 2 ] && is_charging_economical "$average_price_integer" "$total_cost_integer"; then
         manage_charging "on" "Charging based on average price ($(millicentToEuro "$average_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
     else
         reason_msg="Considering charging losses and costs, charging is too expensive."
