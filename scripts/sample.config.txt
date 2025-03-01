@@ -13,7 +13,7 @@ TZ="Europe/Amsterdam"
 
 # Configuration file version: Used to ensure compatibility with the Spotmarket-Switcher software.
 # You'll see a warning while running the Spotmarket-Switcher if you are using an outdated config version.
-config_version=9
+config_version=10
 
 #######################
 # API Selection
@@ -29,6 +29,11 @@ select_pricing_api=1
 # Include prices for the next day in calculations:
 # 0 = No (use only today's prices), 1 = Yes use todays and tomorrows prices when available today in the afternoon.
 include_second_day=1
+# Ignore past hours when second day is enabled:
+# 0 = Do not ignore past hours, 1 = Ignore past hours when second day is enabled.
+# When enabled, the system will only consider future hours (including the current hour) for charging, discharging, and switching decisions.
+# This improves the accuracy of the forecast by ignoring past data.
+ignore_past_hours=1
 # Note: If you activate this and the prices decrease over several days,
 # it is possible that there will be no charging or switching for several days until the lowest prices are reached.
 
