@@ -832,13 +832,22 @@ manage_discharging() {
 manage_fritz_sockets() {
     local action=$1
     [ "$action" != "off" ] && action=$([ "$execute_fritzsocket_on" == "1" ] && echo "on" || echo "off")
+    if [ "$fritz_sockets_state" = "$action" ]; then
+        if [ -n "$DEBUG" ]; then
+            log_message "D: Fritz sockets already $action, skipping action."
+        fi
+        return 0
+    fi
+
     if fritz_login; then
         log_message >&2 "I: Turning $action Fritz sockets."
         for socket in "${sockets[@]}"; do
             [ "$socket" != "0" ] && manage_fritz_socket "$action" "$socket"
         done
+        fritz_sockets_state="$action"
     else
         log_message >&2 "E: Fritz login failed."
+        fritz_sockets_state="unknown"
     fi
 }
 
@@ -855,10 +864,26 @@ manage_fritz_socket() {
 }
 
 fritz_login() {
-    sid=""
+    # Prüfen, ob bereits eine gültige sid existiert
+    if [ -n "$sid" ] && [ "$sid" != "0000000000000000" ]; then
+        # Teste die Gültigkeit der aktuellen sid mit einem einfachen Aufruf
+        test_sid=$(curl -s "http://$fbox/login_sid.lua?sid=$sid" | grep -o "<SID>[a-z0-9]\{16\}" | cut -d'>' -f 2)
+        if [ "$test_sid" = "$sid" ]; then
+            if [ -n "$DEBUG" ]; then
+                log_message "D: Existing Fritz!Box session with SID $sid is still valid."
+            fi
+            return 0
+        else
+            log_message >&2 "I: Current SID $sid is no longer valid, performing new login."
+            sid=""
+        fi
+    fi
+
+    # Login durchführen, wenn keine gültige sid vorhanden ist
     challenge=$(curl -s "http://$fbox/login_sid.lua" | grep -o "<Challenge>[a-z0-9]\{8\}" | cut -d'>' -f 2)
     if [ -z "$challenge" ]; then
         log_message >&2 "E: Could not retrieve challenge from login_sid.lua."
+        sid=""
         return 1
     fi
 
@@ -868,11 +893,12 @@ fritz_login() {
 
     if [ "$sid" = "0000000000000000" ]; then
         log_message >&2 "E: Login to Fritz!Box failed."
+        sid=""
         return 1
     fi
 
     if [ -n "$DEBUG" ]; then
-        log_message "D: Login to Fritz!Box successful."
+        log_message "D: Login to Fritz!Box successful with SID $sid."
     fi
     return 0
 }
@@ -880,14 +906,32 @@ fritz_login() {
 manage_shelly_sockets() {
     local action=$1
     [ "$action" != "off" ] && action=$([ "$execute_shellysocket_on" == "1" ] && echo "on" || echo "off")
+
+    # Prüfen, ob der aktuelle Zustand bereits dem gewünschten entspricht
+    if [ "$shelly_sockets_state" = "$action" ]; then
+        if [ -n "$DEBUG" ]; then
+            log_message "D: Shelly sockets already $action, skipping action."
+        fi
+        return 0
+    fi
+
     log_message >&2 "I: Turning $action Shelly sockets."
+    local success=true
     for ip in "${shelly_ips[@]}"; do
         if [ "$ip" != "0" ] && [ -n "$ip" ]; then  # Prüfen, ob IP gültig ist
-            manage_shelly_socket "$action" "$ip"
+            manage_shelly_socket "$action" "$ip" || success=false
         else
             log_message >&2 "D: Skipping invalid or empty Shelly IP: $ip"
         fi
     done
+
+    # Zustand nur aktualisieren, wenn alle Schaltvorgänge erfolgreich waren
+    if [ "$success" = true ]; then
+        shelly_sockets_state="$action"
+    else
+        shelly_sockets_state="unknown"  # Zustand zurücksetzen bei Fehler
+        log_message >&2 "E: One or more Shelly socket actions failed, state set to unknown."
+    fi
 }
 
 manage_shelly_socket() {
@@ -1553,6 +1597,9 @@ fi
 
 charge_table=""
 discharge_table=""
+sid=""
+shelly_sockets_state="unknown"
+fritz_sockets_state="unknown"
 fritz_switchable_sockets_table=""
 shelly_switchable_sockets_table=""
 for idx in "${!sorted_prices[@]}"; do
