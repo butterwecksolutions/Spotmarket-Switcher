@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.23-DEV
+VERSION="2.4.23"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
