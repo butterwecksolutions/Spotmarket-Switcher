@@ -1,8 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.20-DEV"
-
-#set -e
+VERSION="2.4.21-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -124,18 +122,11 @@ parse_and_validate_config() {
                 continue
             elif [[ "$validation_pattern" == "array" && "${config_values[$var_name]}" == "" ]]; then
                 continue
-            elif [[ "$validation_pattern" == "ip" && ! "${config_values[$var_name]}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                errors+="E: $var_name has an invalid IP address format: ${config_values[$var_name]}.\n"
-                continue
             fi
             if ! [[ "${config_values[$var_name]}" =~ ^($validation_pattern)$ ]]; then
                 errors+="E: $var_name has an invalid value: ${config_values[$var_name]}.\n"
             fi
         done
-
-        if [[ "$version_valid" == true && "$version_value" -lt 1 ]]; then
-            errors+="W: The config.txt version is less than 1. You are using an outdated unsupported configuration file. Please re-download and reconfigurate. \n"
-        fi
 
         kill $spinner_pid &>/dev/null
         if [[ -n "$errors" ]]; then
@@ -158,6 +149,41 @@ rotating_spinner() {
         sleep $delay
         printf "\r"
     done
+}
+
+check_tools() {
+    local tools="$1"
+    local num_tools_missing=0
+    for tool in $tools; do
+        if ! which "$tool" >/dev/null; then
+            log_message >&2 "E: Please ensure the tool '$tool' is found."
+            num_tools_missing=$((num_tools_missing + 1))
+        fi
+    done
+    if [ "$num_tools_missing" -gt 0 ]; then
+        log_message >&2 "E: $num_tools_missing tools are missing."
+        exit_with_cleanup 127
+    fi
+}
+
+cleanup() {
+    if [ -n "$keepalive_pid" ] && kill -0 "$keepalive_pid" 2>/dev/null; then
+        log_message >&2 "I: Attempting to stop keepalive process with PID $keepalive_pid."
+        kill "$keepalive_pid" 2>/dev/null
+        sleep 1  # Kurze Wartezeit, um dem Prozess Zeit zum Beenden zu geben
+        if kill -0 "$keepalive_pid" 2>/dev/null; then
+            log_message >&2 "I: Keepalive process $keepalive_pid still running, forcing termination with SIGKILL."
+            kill -9 "$keepalive_pid" 2>/dev/null
+        fi
+        wait "$keepalive_pid" 2>/dev/null
+        if [ -n "$DEBUG" ]; then
+            if ! kill -0 "$keepalive_pid" 2>/dev/null; then
+                log_message "D: Keepalive process $keepalive_pid successfully terminated."
+            else
+                log_message "D: Failed to terminate keepalive process $keepalive_pid."
+            fi
+        fi
+    fi
 }
 
 download_awattar_prices() {
@@ -856,7 +882,11 @@ manage_shelly_sockets() {
     [ "$action" != "off" ] && action=$([ "$execute_shellysocket_on" == "1" ] && echo "on" || echo "off")
     log_message >&2 "I: Turning $action Shelly sockets."
     for ip in "${shelly_ips[@]}"; do
-        [ "$ip" != "0" ] && manage_shelly_socket "$action" "$ip"
+        if [ "$ip" != "0" ] && [ -n "$ip" ]; then  # Prüfen, ob IP gültig ist
+            manage_shelly_socket "$action" "$ip"
+        else
+            log_message >&2 "D: Skipping invalid or empty Shelly IP: $ip"
+        fi
     done
 }
 
@@ -867,7 +897,11 @@ manage_shelly_socket() {
         log_message >&2 "I: Disabling inverter while switching."
         charger_disable_inverter >/dev/null
     fi
-    curl -s -u "$shellyuser:$shellypasswd" "http://$ip/relay/0?turn=$action" -o /dev/null || log_message >&2 "E: Could not execute switch-$action of Shelly socket with IP $ip - ignored."
+    if [ -n "$ip" ]; then
+        curl -s -u "$shellyuser:$shellypasswd" "http://$ip/relay/0?turn=$action" -o /dev/null || log_message >&2 "E: Could not execute switch-$action of Shelly socket with IP $ip - ignored."
+    else
+        log_message >&2 "D: No valid IP provided for Shelly socket, skipping."
+    fi
 }
 
 millicentToEuro() {
@@ -926,16 +960,25 @@ log_message() {
 }
 
 exit_with_cleanup() {
-    log_message >&2 "I: Cleanup and exit with error $1"
+    local exit_code="$1"
+    log_message >&2 "I: Cleanup and exit with error $exit_code"
     if ((use_charger != 0)); then
         manage_charging "off" "Turn off charging."
     fi
-    if ((execute_discharging == 0 && (use_charger != 0))); then
+    if ((execute_discharging == 0 && use_charger != 0)); then
         manage_discharging "on" "Spotmarket-Switcher is disabling itself. Maybe there is no internet connection."
     fi
-    manage_fritz_sockets "off"
-    manage_shelly_sockets "off"
-    exit "$1"
+    if ((use_fritz_dect_sockets == 1)); then
+        manage_fritz_sockets "off"
+    fi
+    if ((use_shelly_wlan_sockets == 1)); then
+        manage_shelly_sockets "off"
+    fi
+    cleanup
+    if [ -n "$DEBUG" ]; then
+        log_message "D: Exiting with code $exit_code"
+    fi
+    exit "$exit_code"
 }
 
 checkAndClean() {
@@ -1058,8 +1101,17 @@ if [ -z "$CONFIG" ]; then
     CONFIG="config.txt"
 fi
 
+# 1. Konfiguration und Tools prüfen
 if [ -f "$DIR/$CONFIG" ]; then
     source "$DIR/$CONFIG"
+else
+    log_message >&2 "E: The file $DIR/$CONFIG was not found! Configure the existing sample.config.txt file and then save it as config.txt in the same directory." false
+    exit 127
+fi
+
+if ! parse_and_validate_config "$DIR/$CONFIG"; then
+    exit 127
+fi
 
 num_tools_missing=0
 SOC_percent=-1
@@ -1075,14 +1127,14 @@ if [ "$use_charger" == "1" ]; then
         log_message >&2 "I: Executing dbus -y com.victronenergy.settings /Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day SetValue -- -7"
         dbus -y com.victronenergy.settings /Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day SetValue -- -7
     }
-charger_command_set_SOC_target() {
-    log_message >&2 "I: Executing mosquitto_pub -t $MQTT_TOPIC_SUB_SET_SOC -h $venus_os_mqtt_ip -p $venus_os_mqtt_port -m \"{\"value\":$target_soc}\""
-    if mosquitto_pub -t "$MQTT_TOPIC_SUB_SET_SOC" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":$target_soc}" 2>/dev/null || true; then
-        log_message >&2 "I: Successfully set SOC target to $target_soc via MQTT."
-    else
-        log_message >&2 "E: Failed to set SOC target via MQTT. Check broker at $venus_os_mqtt_ip:$venus_os_mqtt_port or topic $MQTT_TOPIC_SUB_SET_SOC."
-    fi
-}
+    charger_command_set_SOC_target() {
+        log_message >&2 "I: Executing mosquitto_pub -t $MQTT_TOPIC_SUB_SET_SOC -h $venus_os_mqtt_ip -p $venus_os_mqtt_port -m \"{\"value\":$target_soc}\""
+        if mosquitto_pub -t "$MQTT_TOPIC_SUB_SET_SOC" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":$target_soc}" 2>/dev/null || true; then
+            log_message >&2 "I: Successfully set SOC target to $target_soc via MQTT."
+        else
+            log_message >&2 "E: Failed to set SOC target via MQTT. Check broker at $venus_os_mqtt_ip:$venus_os_mqtt_port or topic $MQTT_TOPIC_SUB_SET_SOC."
+        fi
+    }
     charger_disable_inverter() {
         log_message >&2 "I: Executing dbus -y com.victronenergy.settings /Settings/CGwacs/MaxDischargePower SetValue -- 0"
         dbus -y com.victronenergy.settings /Settings/CGwacs/MaxDischargePower SetValue -- 0
@@ -1102,23 +1154,24 @@ charger_command_set_SOC_target() {
 fi
 
 if [ "$use_charger" == "2" ]; then
+    tools="$tools mosquitto_sub mosquitto_pub"
     serial_number=$(mosquitto_sub -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -t "${MQTT_TOPIC_PREFIX}N/#" -C 1 | grep -o '"value":"[^,]*' | sed 's/"value"://' | cut -d '}' -f 1 | tr -d '"')
     if [[ -z "$serial_number" ]]; then
         log_message >&2 "E: Victron MQTT system not found. Exit."
         exit 1
     fi
-    MQTT_TOPIC_SUB=N/$serial_number/system/0/Dc/Battery/Soc
-    MQTT_TOPIC_PUB=R/$serial_number/keepalive
-    MQTT_TOPIC_SUB_CHARGE=W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day
-    MQTT_TOPIC_SUB_STOP_CHARGE=W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day
-    MQTT_TOPIC_SUB_SET_SOC=W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Soc
-    MQTT_TOPIC_SUB_DISABLE_INV=W/$serial_number/settings/0/Settings/CGwacs/MaxDischargePower
-    MQTT_TOPIC_SUB_ENABLE_INV=W/$serial_number/settings/0/Settings/CGwacs/MaxDischargePower
+    MQTT_TOPIC_SUB="N/$serial_number/system/0/Dc/Battery/Soc"
+    MQTT_TOPIC_PUB="R/$serial_number/keepalive"
+    MQTT_TOPIC_SUB_CHARGE="W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day"
+    MQTT_TOPIC_SUB_STOP_CHARGE="W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Day"
+    MQTT_TOPIC_SUB_SET_SOC="W/$serial_number/settings/0/Settings/CGwacs/BatteryLife/Schedule/Charge/0/Soc"
+    MQTT_TOPIC_SUB_DISABLE_INV="W/$serial_number/settings/0/Settings/CGwacs/MaxDischargePower"
+    MQTT_TOPIC_SUB_ENABLE_INV="W/$serial_number/settings/0/Settings/CGwacs/MaxDischargePower"
 
     keepalive_pid=""
     send_keepalive_for_charger2() {
         while [ "$use_charger" == "2" ]; do
-            mosquitto_pub -t "$MQTT_TOPIC_PUB" -m "" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port"
+            mosquitto_pub -t "$MQTT_TOPIC_PUB" -m "" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" 2>/dev/null
             sleep 5
         done
     }
@@ -1146,6 +1199,10 @@ if [ "$use_charger" == "2" ]; then
         log_message >&2 "I: Executing mosquitto_pub -t "$MQTT_TOPIC_SUB_ENABLE_INV" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m \"{\"value\":$limit_inverter_power_after_enabling}\""
         mosquitto_pub -t "$MQTT_TOPIC_SUB_ENABLE_INV" -h "$venus_os_mqtt_ip" -p "$venus_os_mqtt_port" -m "{\"value\":$limit_inverter_power_after_enabling}"
     }
+    if [ -z "$SOC_percent" ] || ! [[ "$SOC_percent" =~ ^[0-9]+$ ]] || (( SOC_percent < 0 || SOC_percent > 100 )); then
+        log_message >&2 "E: Invalid SOC value: $SOC_percent. Must be an integer between 0 and 100."
+        exit 1
+    fi
 fi
 
 if [ "$use_charger" == "3" ]; then
@@ -1270,11 +1327,6 @@ fi
 
 unset num_tools_missing
 
-else
-    log_message >&2 "E: The file $DIR/$CONFIG was not found! Configure the existing sample.config.txt file and then save it as config.txt in the same directory." false
-    exit 127
-fi
-
 if [ -f "$DIR/license.txt" ]; then
     source "$DIR/license.txt"
 else
@@ -1352,8 +1404,57 @@ echo >>"$LOG_FILE"
 log_message >&2 "I: Bash Version: $(bash --version | head -n 1)"
 log_message >&2 "I: Spotmarket-Switcher - Version $VERSION"
 
-parse_and_validate_config "$DIR/$CONFIG"
+# 2. Solarenergie prüfen
+if ((use_solarweather_api_to_abort == 1)); then
+    download_solarenergy
+    get_temp_today
+    get_temp_tomorrow
+    get_snow_today
+    get_snow_tomorrow
+    get_solarenergy_today
+    get_solarenergy_tomorrow
+    get_cloudcover_today
+    get_cloudcover_tomorrow
+    get_sunrise_today
+    get_sunset_today
+    get_suntime_today
 
+    if [ -f "$file3" ] && [ -s "$file3" ]; then
+        log_message >&2 "I: Sunrise today will be $sunrise_today and sunset will be $sunset_today. Suntime will be $suntime_today minutes."
+        log_message >&2 "I: Solarenergy today will be $solarenergy_today megajoule per sqaremeter with $cloudcover_today percent clouds. The temperature is "$temp_today"°C with "$snow_today"cm snowdepth."
+        log_message >&2 "I: Solarenergy tomorrow will be $solarenergy_tomorrow megajoule per squaremeter with $cloudcover_tomorrow percent clouds. The temperature will be "$temp_tomorrow"°C with "$snow_tomorrow"cm snowdepth."
+        
+        if ((abort_solar_yield_today_integer <= solarenergy_today_integer)) && ((abort_solar_yield_tomorrow_integer <= solarenergy_tomorrow_integer)); then
+            log_message >&2 "I: There is enough solarenergy today and tomorrow. ESS can be used normally and no need to switch or charge. Spotmarket-Switcher will be disabled."
+            execute_charging=0
+            execute_discharging=1
+            execute_fritzsocket_on=0
+            execute_shellysocket_on=0
+            if ((use_charger != 0)); then
+                manage_discharging "on" "Sufficient solar energy available."
+            fi
+            exit_with_cleanup 0
+        fi
+
+        if ((abort_suntime <= suntime_today)); then
+            log_message >&2 "I: There are enough sun minutes today. Spotmarket-Switcher will be disabled."
+            execute_charging=0
+            execute_discharging=1
+            execute_fritzsocket_on=0
+            execute_shellysocket_on=0
+            if ((use_charger != 0)); then
+                manage_discharging "on" "Sufficient suntime available."
+            fi
+            exit_with_cleanup 0
+        fi
+    else
+        log_message >&2 "E: No solar data. Please check your internet connection and API Key or wait if it is a temporary error."
+    fi
+else
+    log_message "D: Skipping Solarweather. Not activated."
+fi
+
+# 3. Preisdaten beschaffen
 checkAndClean
 
 if ((select_pricing_api == 1)); then
@@ -1393,98 +1494,23 @@ fi
 ignore_past_prices
 fetch_prices
 
-if ((use_solarweather_api_to_abort == 1)); then
-    download_solarenergy
-    get_temp_today
-    get_temp_tomorrow
-    get_snow_today
-    get_snow_tomorrow
-    get_solarenergy_today
-    get_solarenergy_tomorrow
-    get_cloudcover_today
-    get_cloudcover_tomorrow
-    get_sunrise_today
-    get_sunset_today
-    get_suntime_today
-fi
-
+# 4. Aktuellen Preis prüfen
 log_message >&2 "I: Please verify correct system time and timezone:\n   $(TZ=$TZ date)"
 log_message >&2 "I: Current price is $current_price $Unit."
-log_message >&2 "I: The average price will be $average_price $Unit."
-log_message >&2 "I: Highest price will be $highest_price $Unit."
 
-price_table=""
-for i in $(seq 1 "$loop_hours"); do
-    eval price=\$P$i
-    price_table+="$i:$price "
-    if [ $((i % 12)) -eq 0 ]; then
-        price_table+="\n                  "
+if ((abort_price_integer <= current_price_integer)); then
+    log_message >&2 "I: Current price ($(millicentToEuro "$current_price_integer")€) is too high. Spotmarket-Switcher will be disabled if higher than ($(millicentToEuro "$abort_price_integer")€)."
+    execute_charging=0
+    execute_discharging=1
+    execute_fritzsocket_on=0
+    execute_shellysocket_on=0
+    if ((use_charger != 0)); then
+        manage_discharging "on" "Price exceeds abort threshold."
     fi
-done
-log_message >&2 "I: Sorted prices (low to high): $price_table"
-
-if [ "$include_second_day" -eq 1 ]; then
-    if [ "$loop_hours" -lt 24 ]; then
-        current_hour=$(TZ=$TZ date +%H)
-        if [ "$current_hour" -ge 13 ]; then
-            log_message >&2 "I: time is > 13:00 and price data delayed. $loop_hours prices available. Trying to check other APIs too (5 retries with 5 minutes pause)..."
-            retry_count=0
-            max_retries=5
-            while [ "$current_hour" -ge 13 ]; do
-                for api in "awattar-API" "entsoe-API" "tibber-API"; do
-                    log_message >&2 "E: Trying $api for prices."
-                    price_table=""
-                    case "$api" in
-                        "awattar-API")
-                            select_pricing_api="1"
-                            use_awattar_api
-                            use_awattar_tomorrow_api
-                            ;;
-                        "entsoe-API")
-                            select_pricing_api="2"
-                            rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
-                            use_entsoe_api
-                            ;;
-                        "tibber-API")
-                            select_pricing_api="3"
-                            use_tibber_api
-                            use_tibber_tomorrow_api
-                            ;;
-                    esac
-                    ignore_past_prices
-                    fetch_prices
-                    price_table=""
-                    for i in $(seq 1 "$loop_hours"); do
-                        eval price=\$P$i
-                        price_table+="$i:$price "
-                        if [ $((i % 12)) -eq 0 ]; then
-                            price_table+="\n                  "
-                        fi
-                    done
-                    log_message >&2 "I: $api returned $loop_hours prices."
-                    if [ -n "$price_table" ]; then
-                        log_message >&2 "I: $api sorted prices: $price_table"
-                    else
-                        log_message >&2 "E: $api did not return valid prices."
-                    fi
-                    if [ "$loop_hours" -gt 24 ]; then
-                        break 2
-                    fi
-                done
-                retry_count=$((retry_count + 1))
-                if [ "$retry_count" -ge "$max_retries" ]; then
-                    log_message >&2 "E: All retries exhausted. Exiting..."
-                    break 2
-                fi
-                log_message >&2 "I: Prices still delayed. Waiting 5 minutes..."
-                sleep 300
-                current_hour=$(date +%H)
-            done
-        fi
-    fi
+    exit_with_cleanup 0
 fi
 
-# Dynamische Auswahl und Anpassung der Arrays basierend auf loop_hours
+# 5. Preisdaten verarbeiten
 if [ "$loop_hours" -le 24 ]; then
     log_message >&2 "I: Using 24-hour config matrix as base, adapting to $loop_hours hours."
     charge_array=("${config_matrix24_charge[@]}")
@@ -1492,7 +1518,6 @@ if [ "$loop_hours" -le 24 ]; then
     fritzsocket_array=("${config_matrix24_fritzsocket[@]}")
     shellysocket_array=("${config_matrix24_shellysocket[@]}")
     
-    # Kürze die Arrays auf die tatsächliche Anzahl von loop_hours, falls kleiner als 24
     if [ "$loop_hours" -lt 24 ]; then
         log_message >&2 "D: Trimming arrays to $loop_hours hours."
         charge_array=("${charge_array[@]:0:$loop_hours}")
@@ -1507,7 +1532,6 @@ elif [ "$loop_hours" -le 48 ]; then
     fritzsocket_array=("${config_matrix48_fritzsocket[@]}")
     shellysocket_array=("${config_matrix48_shellysocket[@]}")
     
-    # Kürze die Arrays auf die tatsächliche Anzahl von loop_hours, falls kleiner als 48
     if [ "$loop_hours" -lt 48 ]; then
         log_message >&2 "I: Trimming arrays to $loop_hours hours."
         charge_array=("${charge_array[@]:0:$loop_hours}")
@@ -1520,7 +1544,6 @@ else
     exit 1
 fi
 
-# Debugging-Ausgabe zur Überprüfung der Arrays
 if [ -n "$DEBUG" ]; then
     log_message "D: charge_array after adjustment: ${charge_array[*]}"
     log_message "D: discharge_array after adjustment: ${discharge_array[*]}"
@@ -1532,74 +1555,44 @@ charge_table=""
 discharge_table=""
 fritz_switchable_sockets_table=""
 shelly_switchable_sockets_table=""
-# Sicherstellen, dass SOC_percent gesetzt ist
-if [ -z "$SOC_percent" ] || ! [[ "$SOC_percent" =~ ^[0-9]+$ ]]; then
-    log_message >&2 "W: SOC_percent ist nicht gesetzt oder kein gültiger Integer. Setze auf 0 als Standardwert."
-    SOC_percent=0
-fi
-log_message "D: Starting table generation loop with ${#sorted_prices[@]} prices."
 for idx in "${!sorted_prices[@]}"; do
-    i=$((idx + 1))  # Preisrang beginnt bei 1 statt 0
-    log_message "D: Processing price rank $i"
+    i=$((idx + 1))
     charge_value="${charge_array[$idx]}"
     discharge_value="${discharge_array[$idx]}"
     fritzsocket_value="${fritzsocket_array[$idx]}"
     shellysocket_value="${shellysocket_array[$idx]}"
 
-    log_message "D: Values - charge: $charge_value, discharge: $discharge_value, fritz: $fritzsocket_value, shelly: $shellysocket_value"
-
     if [ "$charge_value" -eq 1 ]; then
         charge_table="$charge_table $i"
     fi
-
-    # Nur prüfen, wenn use_charger aktiviert ist und SOC_percent gültig
-    if [ "$use_charger" -ne 0 ] && [ -n "$SOC_percent" ] && [[ "$SOC_percent" =~ ^[0-9]+$ ]] && [ "$SOC_percent" -ge "$discharge_value" ]; then
+    if [ "$use_charger" -ne 0 ] && [ "$SOC_percent" -ge "$discharge_value" ]; then
         discharge_table="$discharge_table $i"
     fi
-
     if [ "$fritzsocket_value" -eq 1 ]; then
         fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
     fi
-
     if [ "$shellysocket_value" -eq 1 ]; then
         shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
     fi
 done
 
+log_message >&2 "I: The average price will be $average_price $Unit."
+log_message >&2 "I: Highest price will be $highest_price $Unit."
+price_table=""
+for i in $(seq 1 "$loop_hours"); do
+    eval price=\$P$i
+    price_table+="$i:$price "
+    if [ $((i % 12)) -eq 0 ]; then
+        price_table+="\n                  "
+    fi
+done
+log_message >&2 "I: Sorted prices (low to high): $price_table"
 log_message >&2 "I: Charge at price ranks:$charge_table"
 log_message >&2 "I: Discharge at price ranks (if SOC >= min):$discharge_table"
 log_message >&2 "I: Fritz switchable sockets at price ranks:$fritz_switchable_sockets_table"
 log_message >&2 "I: Shelly switchable sockets at price ranks:$shelly_switchable_sockets_table"
 
-if ((use_solarweather_api_to_abort == 1)); then
-    if [ -f "$file3" ] && [ -s "$file3" ]; then
-        log_message >&2 "I: Sunrise today will be $sunrise_today and sunset will be $sunset_today. Suntime will be $suntime_today minutes."
-        log_message >&2 "I: Solarenergy today will be $solarenergy_today megajoule per sqaremeter with $cloudcover_today percent clouds. The temperature is "$temp_today"°C with "$snow_today"cm snowdepth."
-        log_message >&2 "I: Solarenergy tomorrow will be $solarenergy_tomorrow megajoule per squaremeter with $cloudcover_tomorrow percent clouds. The temperature will be "$temp_tomorrow"°C with "$snow_tomorrow"cm snowdepth."
-        
-        if awk -v temp="$temp_today" -v snow="$snow_today" 'BEGIN { exit !(temp < 0 && snow > 1) }'; then
-            target_soc=$(get_target_soc 0)
-            log_message >&2 "I: There is snow on the solar panels (snowdepth > 1cm) at negative degrees. Target SOC will be set to $target_soc% (max value of the matrix)."
-            charger_command_set_SOC_target >/dev/null
-        else
-            if (($SOC_percent != -1)); then
-                target_soc=$(get_target_soc "$solarenergy_today")
-                log_message >&2 "I: At $solarenergy_today megajoule there will be a dynamic SOC charge-target of $target_soc% calculated. The rest is reserved for solar."
-                charger_command_set_SOC_target >/dev/null
-            fi
-        fi
-    else
-        log_message >&2 "E: No solar data. Please check your internet connection and API Key or wait if it is a temporary error."
-        if (($SOC_percent != -1)); then    
-            target_soc=$(get_target_soc "$solarenergy_today")
-            log_message >&2 "E: A SOC charge-target of $target_soc% will be used without valid solarweather-data."
-            charger_command_set_SOC_target >/dev/null
-        fi
-    fi
-else
-    log_message "D: skip Solarweather. not activated"
-fi
-
+# 6. Entscheidungen treffen
 charging_condition_met=""
 discharging_condition_met=""
 switchablesockets_condition_met=""
@@ -1654,92 +1647,75 @@ evaluate_conditions discharging_conditions[@] discharging_descriptions[@] "execu
 evaluate_conditions fritzsocket_conditions[@] fritzsocket_conditions_descriptions[@] "execute_fritzsocket_on" "fritzsocket_condition_met"
 evaluate_conditions shellysocket_conditions[@] shellysocket_conditions_descriptions[@] "execute_shellysocket_on" "shellysocket_condition_met"
 
-if ((use_solarweather_api_to_abort == 1)); then
-    if [ ! -s "$file3" ]; then 
-        log_message >&2 "E: File '$file3' does not exist or is empty."
-    fi
-
-    if ((abort_solar_yield_today_integer <= solarenergy_today_integer)) && ((abort_solar_yield_tomorrow_integer <= solarenergy_tomorrow_integer)); then
-        log_message >&2 "I: There is enough solarenergy today and tomorrow. ESS can be used normal and no need to switch or charge. Spotmarket-Switcher will be disabled."
-        execute_charging=0
-        execute_discharging=1
-        execute_fritzsocket_on=0
-        execute_shellysocket_on=0
-    else
-        log_message >&2 "I: Not enough solarenergy today or tomorrow. Spotmarket-Switcher will manage discharging (ESS), charging and switching."
-    fi
-
-    if ((abort_suntime <= suntime_today)); then
-        log_message >&2 "I: There are enough sun minutes today. Spotmarket-Switcher will be disabled."
-        execute_charging=0
-        execute_discharging=1
-        execute_fritzsocket_on=0
-        execute_shellysocket_on=0
-    fi
-fi
-
-if ((reenable_inverting_at_fullbatt == 1)); then
-    if (( $SOC_percent >= reenable_inverting_at_soc )); then
-        log_message >&2 "I: The battery is getting full. Re-enabling inverter. This is important on a DC-AC system to enable grid-feedin."
-        execute_discharging=1
-    fi
-fi
-
-if ((abort_price_integer <= current_price_integer)); then
-    log_message >&2 "I: Current price ($(millicentToEuro "$current_price_integer")€) is too high. Spotmarket-Switcher will be disabled if higher than ($(millicentToEuro "$abort_price_integer")€)."
-    execute_charging=0
+if ((reenable_inverting_at_fullbatt == 1)) && ((SOC_percent >= reenable_inverting_at_soc)); then
+    log_message >&2 "I: The battery is getting full. Re-enabling inverter. This is important on a DC-AC system to enable grid-feedin."
     execute_discharging=1
-    execute_fritzsocket_on=0
-    execute_shellysocket_on=0
 fi
 
 percent_of_current_price_integer=$(awk "BEGIN {printf \"%.0f\", $current_price_integer*$energy_loss_percent/100}")
 total_cost_integer=$((current_price_integer + percent_of_current_price_integer + battery_lifecycle_costs_cent_per_kwh_integer))
 
-if ((execute_charging == 1 && use_charger != 0)); then
-    economic=""
-    if [ "$economic_check" -eq 0 ]; then
-        manage_charging "on" "Economical check was not activated. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-    elif [ "$economic_check" -eq 1 ] && is_charging_economical "$highest_price_integer" "$total_cost_integer"; then
-        manage_charging "on" "Charging based on highest price ($(millicentToEuro "$highest_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-    elif [ "$economic_check" -eq 2 ] && is_charging_economical "$average_price_integer" "$total_cost_integer"; then
-        manage_charging "on" "Charging based on average price ($(millicentToEuro "$average_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-    else
-        reason_msg="Considering charging losses and costs, charging is too expensive."
-        economic="expensive"
-        manage_charging "off" "$reason_msg Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+# 7. Steuerung ausführen
+if ((use_charger != 0)); then
+    if ((use_solarweather_api_to_abort == 1)) && [ -f "$file3" ] && [ -s "$file3" ]; then
+        if awk -v temp="$temp_today" -v snow="$snow_today" 'BEGIN { exit !(temp < 0 && snow > 1) }'; then
+            target_soc=$(get_target_soc 0)
+            log_message >&2 "I: There is snow on the solar panels (snowdepth > 1cm) at negative degrees. Target SOC will be set to $target_soc% (max value of the matrix)."
+            charger_command_set_SOC_target >/dev/null
+        else
+            if (($SOC_percent != -1)); then
+                target_soc=$(get_target_soc "$solarenergy_today")
+                log_message >&2 "I: At $solarenergy_today megajoule there will be a dynamic SOC charge-target of $target_soc% calculated. The rest is reserved for solar."
+                charger_command_set_SOC_target >/dev/null
+            fi
+        fi
+    elif ((use_solarweather_api_to_abort == 1)); then
+        if (($SOC_percent != -1)); then    
+            target_soc=$(get_target_soc "$solarenergy_today")
+            log_message >&2 "E: A SOC charge-target of $target_soc% will be used without valid solarweather-data."
+            charger_command_set_SOC_target >/dev/null
+        fi
     fi
-elif ((execute_charging != 1 && use_charger != 0)); then
-    manage_charging "off" "Charging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-else
-    log_message "D: Skip charger. Not activated. "
-fi
 
-if ((execute_discharging == 1 && use_charger != 0)); then
-    manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
-fi
-if ((execute_discharging == 0 && use_charger != 0)); then
-    manage_discharging "off" "Discharging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+    if ((execute_charging == 1)); then
+        economic=""
+        if [ "$economic_check" -eq 0 ]; then
+            manage_charging "on" "Economical check was not activated. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        elif [ "$economic_check" -eq 1 ] && is_charging_economical "$highest_price_integer" "$total_cost_integer"; then
+            manage_charging "on" "Charging based on highest price ($(millicentToEuro "$highest_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        elif [ "$economic_check" -eq 2 ] && is_charging_economical "$average_price_integer" "$total_cost_integer"; then
+            manage_charging "on" "Charging based on average price ($(millicentToEuro "$average_price_integer") €) comparison makes sense. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        else
+            reason_msg="Considering charging losses and costs, charging is too expensive."
+            economic="expensive"
+            manage_charging "off" "$reason_msg Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        fi
+    else
+        manage_charging "off" "Charging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+    fi
+
+    if ((execute_discharging == 1)); then
+        manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+    else
+        manage_discharging "off" "Discharging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+    fi
+else
+    log_message "D: Skip charger. Not activated."
 fi
 
 if ((use_fritz_dect_sockets == 1)); then
     manage_fritz_sockets
 else
-    log_message "D: skip Fritz DECT. not activated"
+    log_message "D: Skip Fritz DECT. Not activated."
 fi
 
 if ((use_shelly_wlan_sockets == 1)); then
     manage_shelly_sockets
 else
-    log_message "D: skip Shelly Api. not activated"
+    log_message "D: Skip Shelly Api. Not activated."
 fi
 
-cleanup() {
-    if [ -n "$keepalive_pid" ]; then
-        kill "$keepalive_pid" 2>/dev/null
-        wait "$keepalive_pid" 2>/dev/null
-    fi
-}
+# 8. Cleanup und Logging
 echo >>"$LOG_FILE"
 
 if [ -f "$LOG_FILE" ]; then
@@ -1757,3 +1733,6 @@ fi
 if [ -n "$DEBUG" ]; then
     log_message "D: [ OK ]"
 fi
+
+log_message >&2 "I: Script execution completed."
+exit_with_cleanup 0
