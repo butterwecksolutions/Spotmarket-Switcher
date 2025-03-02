@@ -526,36 +526,38 @@ get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo 
 get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
 
 use_awattar_api() {
+    local today=$(TZ=$TZ date +%d)
+    local current_hour=$(TZ=$TZ date +%H)
     if test -f "$file1"; then
-        get_current_awattar_day
-        if [ "$current_awattar_day" = "$(TZ=$TZ date +%-d)" ]; then
+        local file_day=$(grep "date_now_day" "$file1" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: aWATTar today-data is up to date." false
             log_message "D: Using cached today data from $file1."
         else
-            log_message >&2 "I: aWATTar today-data is outdated, fetching new data." false
+            log_message >&2 "I: aWATTar today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
             rm -f "$file1" "$file6" "$file7"
             download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from aWATTar." false
+        log_message >&2 "I: No cached aWATTar today-data, fetching new data." false
         download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
+    fi
+
+    if [ "$include_second_day" = 1 ] && [ "$current_hour" -ge 13 ]; then
+        use_awattar_tomorrow_api
+    else
+        log_message "D: Skipping tomorrow data: either include_second_day=0 or before 13:00 CET."
     fi
 }
 
 use_awattar_tomorrow_api() {
-    if test -f "$file2"; then
-        get_current_awattar_day2
-        if [ "$current_awattar_day2" = "$(TZ=$TZ date +%-d)" ]; then
-            log_message >&2 "I: aWATTar tomorrow-data is up to date." false
-            log_message "D: Using cached tomorrow data from $file2."
-        else
-            log_message >&2 "I: aWATTar tomorrow-data is outdated, fetching new data." false
-            rm -f "$file2"
-            download_awattar_prices "$link2" "$file2" "$file6" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: aWATTar tomorrow-data does not exist, fetching data." false
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+    if [ ! -s "$file2" ] || ! grep -q "$tomorrow" "$file2"; then
+        log_message >&2 "I: No valid tomorrow data in $file2 for $tomorrow or file empty, attempting to fetch new data after 13:00." false
+        rm -f "$file2"
         download_awattar_prices "$link2" "$file2" "$file6" $((RANDOM % 21 + 10))
+    else
+        log_message "D: Cached tomorrow data in $file2 is valid for $tomorrow."
     fi
 }
 
@@ -582,44 +584,47 @@ get_awattar_prices() {
 }
 
 use_tibber_api() {
+    local today=$(TZ=$TZ date +%d)
+    local current_hour=$(TZ=$TZ date +%H)
     if test -f "$file14"; then
-        get_current_tibber_day
-        if [ "$current_tibber_day" = "$(TZ=$TZ date +%d)" ]; then
+        local file_day=$(grep "date_now_day" "$file14" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: Tibber today-data is up to date." false
-            log_message "D: Using cached data from $file14."
+            log_message "D: Using cached data from $file14 for today."
         else
-            log_message >&2 "I: Tibber today-data is outdated, fetching new data." false
-            rm -f "$file12" "$file14" "$file15" "$file16"
+            log_message >&2 "I: Tibber today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
+            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
             download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data from Tibber." false
+        log_message >&2 "I: No cached Tibber today-data, fetching new data." false
+        rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
         download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
     fi
-    use_tibber_tomorrow_api
-    if [ "$include_second_day" = 1 ] && [ -s "$file18" ]; then
-        cat "$file16" "$file18" > "$file12"
-        log_message "D: Combined cached today ($file16) and tomorrow ($file18) into $file12."
+
+    if [ "$include_second_day" = 1 ] && [ "$current_hour" -ge 13 ]; then
+        use_tibber_tomorrow_api
     else
+        log_message "D: Skipping tomorrow data: either include_second_day=0 or before 13:00 CET."
         cp "$file16" "$file12"
-        log_message "D: Only today data used from $file16 to $file12."
     fi
 }
 
 use_tibber_tomorrow_api() {
-    if [ -s "$file18" ]; then
-        tomorrow_day=$(sed -n '/"startsAt":"2025-03-03T00:00:00.000+01:00"/p' "$file18" | wc -l)
-        if [ "$tomorrow_day" -gt 0 ]; then
-            log_message "D: Cached tomorrow data in $file18 is valid for March 3."
-        else
-            log_message >&2 "I: Cached tomorrow data in $file18 is outdated or invalid, fetching new data." false
-            rm -f "$file17" "$file18" "$file12" "$file14" "$file15" "$file16"
-            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: No valid tomorrow data in $file18, fetching new data." false
-        rm -f "$file17" "$file18" "$file12" "$file14" "$file15" "$file16"
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+    if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
+        log_message >&2 "I: No valid tomorrow data in $file18 for $tomorrow or file empty, attempting to fetch new data after 13:00." false
+        rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
         download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+    else
+        log_message "D: Cached tomorrow data in $file18 is valid for $tomorrow."
+    fi
+    if [ -s "$file18" ]; then
+        cat "$file16" "$file18" > "$file12"
+        log_message "D: Combined cached today ($file16) and tomorrow ($file18) into $file12."
+    else
+        log_message "D: Tomorrow data not yet available from API, using only today ($file16) in $file12."
+        cp "$file16" "$file12"
     fi
 }
 
@@ -654,37 +659,44 @@ get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo 
 get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
 
 use_entsoe_api() {
+    local today=$(TZ=$TZ date +%d)
+    local current_hour=$(TZ=$TZ date +%H)
     if test -f "$file10"; then
-        get_current_entsoe_day
-        if [ "$current_entsoe_day" = "$(TZ=$TZ date +%d)" ]; then
+        local file_day=$(grep "date_now_day" "$file10" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: Entsoe today-data is up to date." false
             log_message "D: Using cached today data from $file10."
         else
-            log_message >&2 "I: Entsoe today-data is outdated, fetching new data." false
+            log_message >&2 "I: Entsoe today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
             rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
             download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from Entsoe." false
+        log_message >&2 "I: No cached Entsoe today-data, fetching new data." false
         download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
+    fi
+
+    if [ "$include_second_day" = 1 ] && [ "$current_hour" -ge 13 ]; then
+        use_entsoe_tomorrow_api
+    else
+        log_message "D: Skipping tomorrow data: either include_second_day=0 or before 13:00 CET."
+        cp "$file11" "$file19"
     fi
 }
 
 use_entsoe_tomorrow_api() {
-    if [ -s "$file9" ]; then
-        # Prüfe, ob Daten für morgen sind (vereinfacht, da XML komplexer ist)
-        tomorrow_check=$(grep "2025-03-03" "$file5" | wc -l)
-        if [ "$tomorrow_check" -gt 0 ]; then
-            log_message "D: Cached tomorrow data in $file9 is valid for March 3."
-        else
-            log_message >&2 "I: Cached tomorrow data in $file9 is outdated or invalid, fetching new data." false
-            rm -f "$file5" "$file9" "$file13"
-            download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: No valid tomorrow data in $file9, fetching new data." false
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+    if [ ! -s "$file13" ] || ! grep -q "$tomorrow" "$file5"; then
+        log_message >&2 "I: No valid tomorrow data in $file13 for $tomorrow or file empty, attempting to fetch new data after 13:00." false
         rm -f "$file5" "$file9" "$file13"
         download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
+    else
+        log_message "D: Cached tomorrow data in $file13 is valid for $tomorrow."
+        cat "$file10" "$file13" > "$file8"
+        sed -i '25d;50d' "$file8"
+        sort -g "$file8" > "$file19"
+        echo "date_now_day: $today" >> "$file8"
+        log_message "D: Combined cached today ($file10) and tomorrow ($file13) into $file19."
     fi
 }
 
