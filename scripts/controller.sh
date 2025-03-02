@@ -75,10 +75,14 @@ else
 fi
 
 parse_and_validate_config() {
+    local file="$1"
+    local version_valid=false
+    local errors=""
+
     if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
-        log_message >&2 "W: Due to the older Bash version, the configuration validation is skipped."
-        local file="$1"
-        local version_valid=false
+        # Simplified validation for Bash <= 4 (e.g., macOS Bash 3.2)
+        log_message >&2 "W: Due to the older Bash version, detailed configuration validation is skipped."
+        valid_config_version=11 # Match the new version requirement
         while IFS='=' read -r key value; do
             key=$(echo "$key" | cut -d'#' -f1 | tr -d ' ')
             value=$(echo "$value" | awk -F'#' '{gsub(/^ *"|"$|^ *| *$/, "", $1); print $1}')
@@ -92,14 +96,71 @@ parse_and_validate_config() {
             log_message >&2 "E: Error: config_version=$valid_config_version is missing or the configuration is invalid."
             return 1
         fi
+        # Source the config file since we can't validate further without associative arrays
+        source "$file"
         return 0
     else    
-        local file="$1"
-        local errors=""
+        # Advanced validation for Bash > 4
+        declare -A valid_vars=(
+            ["config_version"]="11" # Updated to 11 for the new version
+            ["use_fritz_dect_sockets"]="0|1"
+            ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
+            ["user"]="string"
+            ["passwd"]="string"
+            ["sockets"]='^\(\"[^"]+\"( \"[^"]+\")*\)$'
+            ["use_shelly_wlan_sockets"]="0|1"
+            ["shelly_ips"]="^\(\".*\"\)$"
+            ["shellyuser"]="string"
+            ["shellypasswd"]="string"
+            ["use_charger"]="0|1|2|3|4"
+            ["limit_inverter_power_after_enabling"]="^(-1|[0-9]{2,5})$"
+            ["energy_loss_percent"]="[0-9]+(\.[0-9]+)?"
+            ["battery_lifecycle_costs_cent_per_kwh"]="[0-9]+(\.[0-9]+)?"
+            ["economic_check"]="0|1|2"
+            ["start_price"]="-?[0-9]+(\.[0-9]+)?"
+            ["feedin_price"]="[0-9]+(\.[0-9]+)?"
+            ["energy_fee"]="[0-9]+(\.[0-9]+)?"
+            ["abort_price"]="[0-9]+(\.[0-9]+)?"
+            ["use_start_stop_logic"]="0|1"
+            ["switchablesockets_at_start_stop"]="0|1"
+            ["charge_at_solar_breakeven_logic"]="0|1"
+            ["switchablesockets_at_solar_breakeven_logic"]="0|1"
+            ["TZ"]="string"
+            ["select_pricing_api"]="1|2|3"
+            ["include_second_day"]="0|1"
+            ["ignore_past_hours"]="0|1"
+            ["use_solarweather_api_to_abort"]="0|1"
+            ["abort_solar_yield_today"]="[0-9]+(\.[0-9]+)?"
+            ["abort_solar_yield_tomorrow"]="[0-9]+(\.[0-9]+)?"
+            ["abort_suntime"]="[0-9]+"
+            ["latitude"]="[-]?[0-9]+(\.[0-9]+)?"
+            ["longitude"]="[-]?[0-9]+(\.[0-9]+)?"
+            ["visualcrossing_api_key"]="string"
+            ["awattar"]="de|at"
+            ["in_Domain"]="string"
+            ["out_Domain"]="string"
+            ["entsoe_eu_api_security_token"]="string"
+            ["price_unit"]="energy|total|tax"
+            ["tibber_api_key"]="string"
+            ["venus_os_mqtt_ip"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
+            ["venus_os_mqtt_port"]="^[0-9]*$"
+            ["mqtt_broker_host_publish"]="string"
+            ["mqtt_broker_host_subscribe"]="string"
+            ["mqtt_broker_port_publish"]="^[0-9]*$"
+            ["mqtt_broker_port_subscribe"]="^[0-9]*$"
+            ["mqtt_broker_topic_publish"]="string"
+            ["mqtt_broker_topic_subscribe"]="string"
+            ["reenable_inverting_at_fullbatt"]="0|1"
+            ["reenable_inverting_at_soc"]="^([1-9][0-9]?|100)$"
+            ["sonnen_API_KEY"]="string"
+            ["sonnen_API_URL"]="string"
+            ["sonnen_minimum_SoC"]="^([0-9][0-9]?|100)$"
+        )
+
+        declare -A config_values
+
         rotating_spinner &   # Start the spinner in the background
         local spinner_pid=$! # Get the PID of the spinner
-        local version_valid=false
-        local version_value=0
 
         while IFS='=' read -r key value; do
             key=$(echo "$key" | cut -d'#' -f1 | tr -d ' ')
@@ -108,7 +169,6 @@ parse_and_validate_config() {
             config_values["$key"]="$value"
             if [[ "$key" == "config_version" ]]; then
                 version_valid=true
-                version_value="$value"
             fi
         done <"$file"
 
@@ -131,6 +191,9 @@ parse_and_validate_config() {
         kill $spinner_pid &>/dev/null
         if [[ -n "$errors" ]]; then
             echo -e "$errors"
+            return 1
+        elif [[ "$version_valid" == false ]]; then
+            log_message >&2 "E: Error: config_version=11 is missing."
             return 1
         else
             echo "Config validation passed."
