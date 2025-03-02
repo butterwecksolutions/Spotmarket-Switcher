@@ -13,7 +13,7 @@ TZ="Europe/Amsterdam"
 
 # Configuration file version: Used to ensure compatibility with the Spotmarket-Switcher software.
 # You'll see a warning while running the Spotmarket-Switcher if you are using an outdated config version.
-config_version=10
+config_version=11
 
 #######################
 # API Selection
@@ -272,96 +272,20 @@ shellyuser="admin"
 shellypasswd="YOURPASSWORD" # only if used
 
 #######################
-# Config Matrices for Charging/Discharging/Switching
+# Config Matrix for Charging/Discharging/Switching
 #######################
 
-# Config Matrix for 24-hour Pricing:
-# Each row represents an sorted price (from low to high) of the day and contains three values:
-# 1st value: Enable (1) or disable (0) charging.
-# 2nd value: Minimum SoC (%) for discharging.
-# 3rd value: Enable (1) or disable (0) switchable sockets.
-	config_matrix24_price=(
-		"Charge Discharge_min_SOC Switch"   # [0] Header
-		"1 96 1"                     # [1] Price 1
-		"1 92 1"                     # [2] Price 2
-		"1 88 1"                     # [3] Price 3
-		"0 84 0"                     # [4] Price 4
-		"0 80 0"                     # [5] Price 5
-		"0 76 0"                     # [6] Price 6
-		"0 72 0"                     # [7] Price 7
-		"0 68 0"                     # [8] Price 8
-		"0 64 0"                     # [9] Price 9
-		"0 60 0"                     # [10] Price 10
-		"0 56 0"                     # [11] Price 11
-		"0 52 0"                     # [12] Price 12
-		"0 48 0"                     # [13] Price 13
-		"0 44 0"                     # [14] Price 14
-		"0 40 0"                     # [15] Price 15
-		"0 36 0"                     # [16] Price 16
-		"0 32 0"                     # [17] Price 17
-		"0 28 0"                     # [18] Price 18
-		"0 24 0"                     # [19] Price 19
-		"0 20 0"                     # [20] Price 20
-		"0 16 0"                     # [21] Price 21
-		"0 14 0"                     # [22] Price 22
-		"0 12 0"                     # [23] Price 23
-		"0 10 0"                     # [24] Price 24
-	)
+# Config Matrix for 24-hour Pricing
+config_matrix24_charge=(1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)  # 1 = charge, 0 = no charge, for prices 1-24 (low to high)
+config_matrix24_discharge=(96 92 88 84 80 76 72 68 64 60 56 52 48 44 40 36 32 28 24 20 16 14 12 10) # Minimum SoC (%) for discharging at each price rank
+config_matrix24_fritzsocket=(1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)  # 1 = on, 0 = off, for Fritz sockets
+config_matrix24_shellysocket=(1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)  # 1 = on, 0 = off, for Shelly sockets
 
-# Config Matrix for 48 prices (if include_second_day is enabled):
-# Similar to the 24-price matrix but for 48-prices.
-	config_matrix48_price=(
-		"Charge Discharge_min_SOC Switch"   # [0] Header
-		"1 98 1"                     # [1] Price 1
-		"1 96 1"                     # [1] Price 2
-		"1 94 1"                     # [2] Price 3
-		"1 92 1"                     # [2] Price 4
-		"1 90 1"                     # [3] Price 5
-		"1 88 1"                     # [3] Price 6
-		"0 86 0"                     # [4] Price 7
-		"0 84 0"                     # [4] Price 8
-		"0 82 0"                     # [5] Price 9
-		"0 80 0"                     # [5] Price 10
-		"0 78 0"                     # [6] Price 11
-		"0 76 0"                     # [6] Price 12
-		"0 74 0"                     # [7] Price 13
-		"0 72 0"                     # [7] Price 14
-		"0 70 0"                     # [8] Price 15
-		"0 68 0"                     # [8] Price 16
-		"0 66 0"                     # [9] Price 17
-		"0 64 0"                     # [9] Price 18
-		"0 62 0"                     # [10] Price 19
-		"0 60 0"                     # [10] Price 20
-		"0 58 0"                     # [11] Price 21
-		"0 56 0"                     # [11] Price 22
-		"0 54 0"                     # [12] Price 23
-		"0 52 0"                     # [12] Price 24
-		"0 50 0"                     # [13] Price 25
-		"0 48 0"                     # [13] Price 26
-		"0 46 0"                     # [14] Price 27
-		"0 44 0"                     # [14] Price 28
-		"0 42 0"                     # [15] Price 29
-		"0 40 0"                     # [15] Price 30
-		"0 38 0"                     # [16] Price 31
-		"0 36 0"                     # [16] Price 32
-		"0 34 0"                     # [17] Price 33
-		"0 32 0"                     # [17] Price 34
-		"0 30 0"                     # [18] Price 35
-		"0 28 0"                     # [18] Price 36
-		"0 26 0"                     # [19] Price 37
-		"0 24 0"                     # [19] Price 38
-		"0 22 0"                     # [20] Price 39
-		"0 20 0"                     # [20] Price 40
-		"0 18 0"                     # [21] Price 41
-		"0 16 0"                     # [21] Price 42
-		"0 15 0"                     # [22] Price 43
-		"0 14 0"                     # [22] Price 44
-		"0 13 0"                     # [23] Price 45
-		"0 12 0"                     # [23] Price 46
-		"0 11 0"                     # [24] Price 47
-		"0 10 0"                     # [24] Price 48
-	)
-
+# Config Matrix for 48-hour Pricing (if include_second_day=1)
+config_matrix48_charge=(1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+config_matrix48_discharge=(98 96 94 92 90 88 86 84 82 80 78 76 74 72 70 68 66 64 62 60 58 56 54 52 50 48 46 44 42 40 38 36 34 32 30 28 26 24 22 20 18 16 15 14 13 12 11 10)
+config_matrix48_fritzsocket=(1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+config_matrix48_shellysocket=(1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Mini-Matrix for Dynamic SOC Based on Solar Energy:
 # This matrix defines dynamic target SoC values based on expected solar energy (in MJ/m²).
