@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.21"
+VERSION="2.4.23-DEV
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -332,6 +332,7 @@ download_tibber_prices() {
     local file="$2"
     local sleep_time="$3"
 
+    log_message "D: Starting Tibber price download from $url to $file"
     if [ -z "$DEBUG" ]; then
         log_message >&2 "I: Please be patient. First we wait $sleep_time seconds in case the system clock is not synchronized and not to overload the API." false
         sleep "$sleep_time"
@@ -342,6 +343,7 @@ download_tibber_prices() {
         log_message >&2 "E: Download of Tibber prices from '$url' to '$file' failed."
         exit_with_cleanup 1
     fi
+    log_message "D: Raw Tibber response written to $file with $(wc -l < "$file") lines."
 
     sed -n '/"today":/,/"tomorrow":/p' "$file" | sed '$d' | sed '/"today":/d' >"$file15"
     sort -t, -k4 "$file15" >"$file16"
@@ -359,19 +361,13 @@ download_tibber_prices() {
     echo "date_now_day: $timestamp" >>"$file17"
     echo "date_now_day: $timestamp" >>"$file12"
 
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Contents of $file12 after processing:"
-        cat "$file12" >&2
-    fi
-
     if [ ! -s "$file16" ]; then
-        log_message >&2 "E: Tibber prices cannot be extracted to '$file16', please check your internet connection and Tibber API Key. Waiting 120 seconds and fallback to aWATTar API."
+        log_message >&2 "E: Tibber prices cannot be extracted to '$file16', falling back to aWATTar API."
         use_tibber=0
         rm "$file"
         sleep 120
         select_pricing_api="1"
         use_awattar_api
-        use_awattar_tomorrow_api
         if [ -f "$file2" ] && [ "$(wc -l <"$file2")" -gt 10 ]; then
             loop_hours=48
         fi
@@ -529,36 +525,57 @@ get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo 
 get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
 
 use_awattar_api() {
+    local today=$(TZ=$TZ date +%d)
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+
+    # Fetch today’s data (24 hours)
     if test -f "$file1"; then
-        get_current_awattar_day
-        if [ "$current_awattar_day" = "$(TZ=$TZ date +%-d)" ]; then
+        local file_day=$(grep "date_now_day" "$file1" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: aWATTar today-data is up to date." false
+            log_message "D: Using cached today data from $file1."
         else
-            log_message >&2 "I: aWATTar today-data is outdated, fetching new data." false
+            log_message >&2 "I: aWATTar today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
             rm -f "$file1" "$file6" "$file7"
             download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from aWATTar." false
+        log_message >&2 "I: No cached aWATTar today-data, fetching new data." false
         download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
+    fi
+
+    # Handle tomorrow’s data if include_second_day=1
+    if [ "$include_second_day" = 1 ]; then
+        if [ ! -s "$file2" ] || ! grep -q "$tomorrow" "$file2"; then
+            log_message >&2 "I: No valid tomorrow data in $file2 for $tomorrow or file empty, fetching new data." false
+            rm -f "$file2"
+            # Fetch full dataset including tomorrow
+            download_awattar_prices "$link2" "$file2" "$file7" $((RANDOM % 21 + 10))
+            # Extract only tomorrow’s 24 hours (skip first 24 lines of today)
+            tail -n +25 "$file7" | head -n 24 > "$file7.tomorrow"
+            # Combine today’s 24 hours with tomorrow’s 24 hours
+            cat "$file6" "$file7.tomorrow" > "$file6.temp"
+            mv "$file6.temp" "$file6"
+            sort -g "$file6" > "$file7"
+            echo "date_now_day: $today" >> "$file6"
+            echo "date_now_day: $today" >> "$file7"
+            log_message "D: Combined today ($file6, 24h) and tomorrow ($file7.tomorrow, 24h) into $file6 and sorted into $file7."
+        else
+            log_message "D: Cached tomorrow data in $file2 is valid for $tomorrow."
+            # Process cached tomorrow data, extract only tomorrow’s 24 hours
+            download_awattar_prices "$link2" "$file2" "$file7" 0  # Reprocess cached file2 into file7
+            tail -n +25 "$file7" | head -n 24 > "$file7.tomorrow"
+            # Combine today’s 24 hours with tomorrow’s 24 hours
+            cat "$file6" "$file7.tomorrow" > "$file6.temp"
+            mv "$file6.temp" "$file6"
+            sort -g "$file6" > "$file7"
+            echo "date_now_day: $today" >> "$file6"
+            echo "date_now_day: $today" >> "$file7"
+            log_message "D: Combined cached today ($file6, 24h) and tomorrow ($file7.tomorrow, 24h) into $file6 and sorted into $file7."
+        fi
     fi
 }
 
-use_awattar_tomorrow_api() {
-    if test -f "$file2"; then
-        get_current_awattar_day2
-        if [ "$current_awattar_day2" = "$(TZ=$TZ date +%-d)" ]; then
-            log_message >&2 "I: aWATTar tomorrow-data is up to date." false
-        else
-            log_message >&2 "I: aWATTar tomorrow-data is outdated, fetching new data." false
-            rm -f "$file2"
-            download_awattar_prices "$link2" "$file2" "$file6" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: aWATTar tomorrow-data does not exist, fetching data." false
-        download_awattar_prices "$link2" "$file2" "$file6" $((RANDOM % 21 + 10))
-    fi
-}
 
 get_awattar_prices() {
     if [ "$ignore_past_hours" -eq 1 ]; then
@@ -583,29 +600,44 @@ get_awattar_prices() {
 }
 
 use_tibber_api() {
+    local today=$(TZ=$TZ date +%d)
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+
+    # Fetch today’s (and potentially tomorrow’s) data
     if test -f "$file14"; then
-        get_current_tibber_day
-        if [ "$current_tibber_day" = "$(TZ=$TZ date +%d)" ]; then
+        local file_day=$(grep "date_now_day" "$file14" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: Tibber today-data is up to date." false
+            log_message "D: Using cached data from $file14 for today."
         else
-            log_message >&2 "I: Tibber today-data is outdated, fetching new data." false
-            rm -f "$file12" "$file14" "$file15" "$file16"
+            log_message >&2 "I: Tibber today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
+            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
             download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from Tibber." false
-        download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-    fi
-}
-
-use_tibber_tomorrow_api() {
-    if [ ! -s "$file18" ]; then
-        rm -f "$file17" "$file18"
-        log_message >&2 "I: File '$file18' has no tomorrow data, we have to try it again until the new prices are online." false
+        log_message >&2 "I: No cached Tibber today-data, fetching new data." false
         rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
         download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
     fi
+
+    # Combine today’s and tomorrow’s data based on include_second_day
+    if [ "$include_second_day" = 1 ]; then
+        if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
+            log_message >&2 "I: No valid tomorrow data in $file18 for $tomorrow or file empty, relying on fresh fetch." false
+            # download_tibber_prices already fetched both days
+            cat "$file16" "$file18" > "$file12"
+            log_message "D: Combined today ($file16) and tomorrow ($file18) into $file12 from fresh fetch."
+        else
+            log_message "D: Cached tomorrow data in $file18 is valid for $tomorrow."
+            cat "$file16" "$file18" > "$file12"
+            log_message "D: Combined cached today ($file16) and tomorrow ($file18) into $file12."
+        fi
+    else
+        cp "$file16" "$file12"
+        log_message "D: Using only today’s data ($file16) in $file12 as include_second_day=0."
+    fi
 }
+
 
 get_tibber_prices() {
     if [ "$ignore_past_hours" -eq 1 ]; then
@@ -638,28 +670,51 @@ get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo 
 get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
 
 use_entsoe_api() {
+    local today=$(TZ=$TZ date +%d)
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+
+    # Fetch today’s data
     if test -f "$file10"; then
-        get_current_entsoe_day
-        if [ "$current_entsoe_day" = "$(TZ=$TZ date +%d)" ]; then
+        local file_day=$(grep "date_now_day" "$file10" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
             log_message >&2 "I: Entsoe today-data is up to date." false
+            log_message "D: Using cached today data from $file10."
         else
-            log_message >&2 "I: Entsoe today-data is outdated, fetching new data." false
+            log_message >&2 "I: Entsoe today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
             rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
             download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from Entsoe." false
+        log_message >&2 "I: No cached Entsoe today-data, fetching new data." false
         download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
+    fi
+    sort -g "$file10" > "$file11"  # Ensure today’s data is sorted
+    cp "$file11" "$file19"         # Default output file
+
+    # Handle tomorrow’s data if include_second_day=1
+    if [ "$include_second_day" = 1 ]; then
+        if [ ! -s "$file13" ] || ! grep -q "$tomorrow" "$file5"; then
+            log_message >&2 "I: No valid tomorrow data in $file13 for $tomorrow or file empty, fetching new data." false
+            rm -f "$file5" "$file9" "$file13"
+            download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
+            # Combine today and tomorrow
+            cat "$file10" "$file13" > "$file8"
+            sed -i '25d;50d' "$file8"  # Remove duplicate timestamps if any
+            sort -g "$file8" > "$file19"
+            echo "date_now_day: $today" >> "$file8"
+            log_message "D: Combined today ($file10) and tomorrow ($file13) into $file19."
+        else
+            log_message "D: Cached tomorrow data in $file13 is valid for $tomorrow."
+            # Combine cached today and tomorrow
+            cat "$file10" "$file13" > "$file8"
+            sed -i '25d;50d' "$file8"
+            sort -g "$file8" > "$file19"
+            echo "date_now_day: $today" >> "$file8"
+            log_message "D: Combined cached today ($file10) and tomorrow ($file13) into $file19."
+        fi
     fi
 }
 
-use_entsoe_tomorrow_api() {
-    if [ ! -s "$file9" ]; then
-        log_message >&2 "I: File '$file9' has no tomorrow data, we have to try it again until the new prices are online." false
-        rm -f "$file5" "$file9" "$file13"
-        download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
-    fi
-}
 
 get_entsoe_prices() {
     if [ "$ignore_past_hours" -eq 1 ]; then
@@ -1080,9 +1135,6 @@ exit_with_cleanup() {
         manage_shelly_sockets "off"
     fi
     cleanup
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Exiting with code $exit_code"
-    fi
     exit "$exit_code"
 }
 
@@ -1563,25 +1615,15 @@ fi
 checkAndClean
 
 if ((select_pricing_api == 1)); then
-    use_awattar_api
+    use_awattar_api  # Now handles both today and tomorrow if include_second_day=1
 elif ((select_pricing_api == 2)); then
-    use_entsoe_api
+    use_entsoe_api   # Now handles both today and tomorrow if include_second_day=1
 elif ((select_pricing_api == 3)); then
     use_tibber=1
-    use_tibber_api
+    use_tibber_api   # Now handles both today and tomorrow if include_second_day=1
     if [ "$use_tibber" -eq 0 ]; then
         select_pricing_api="1"
         use_awattar_api
-    fi
-fi
-
-if ((include_second_day == 1)); then
-    if ((select_pricing_api == 1)); then
-        use_awattar_tomorrow_api
-    elif ((select_pricing_api == 2)); then
-        use_entsoe_tomorrow_api
-    elif ((select_pricing_api == 3)); then
-        use_tibber_tomorrow_api
     fi
 fi
 
@@ -1843,4 +1885,18 @@ if [ -n "$DEBUG" ]; then
 fi
 
 log_message >&2 "I: Script execution completed."
-exit_with_cleanup 0
+if ((use_charger != 0)); then
+    # Respect the last state set by the script
+    if ((charging == 1)); then
+        log_message >&2 "I: Charging remains ON as per script logic."
+    else
+        log_message >&2 "I: Charging remains OFF as per script logic."
+    fi
+    if ((inverting == 1)); then
+        log_message >&2 "I: Discharging remains ON as per script logic."
+    else
+        log_message >&2 "I: Discharging remains OFF as per script logic."
+    fi
+fi
+cleanup # Only stop keepalive, no state changes
+exit 0
