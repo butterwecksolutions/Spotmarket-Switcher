@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.23"
+VERSION="2.4.23-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -844,21 +844,41 @@ get_suntime_today() {
 evaluate_conditions() {
     local -n conditions=$1
     local -n descriptions=$2
-    local -n execute_flag=$3
+    local execute_flag_name=$3
     local -n condition_met_description=$4
 
+    local flag_value=0
+    condition_met_description=""
+
     for i in "${!conditions[@]}"; do
+        if [[ $DEBUG -eq 1 ]]; then
+            log_message "D: Checking condition[$i]=${conditions[$i]}"
+        fi
         if (( ${conditions[$i]} )); then
-            execute_flag=1
-            condition_met_description="${descriptions[$i]}"
+            flag_value=1
+            condition_met_description="${condition_met_description}${descriptions[$i]}; "
             if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Condition met: ${condition_met_description}"
+                log_message "D: Condition met: ${descriptions[$i]} (flag_value set to 1)"
             fi
-            return
         fi
     done
-    execute_flag=0
-    condition_met_description=""
+
+    # Direkte Zuweisung statt declare -g
+    if [ "$execute_flag_name" = "execute_discharging" ]; then
+        execute_discharging=$flag_value
+    elif [ "$execute_flag_name" = "execute_charging" ]; then
+        execute_charging=$flag_value
+    # Fügen Sie weitere elif-Blöcke für andere Flags hinzu, falls nötig
+    fi
+    if [[ $DEBUG -eq 1 ]]; then
+        log_message "D: Set $execute_flag_name=$flag_value"
+    fi
+
+    if [ "$flag_value" -eq 0 ]; then
+        condition_met_description=""
+    else
+        condition_met_description="${condition_met_description%; }"
+    fi
 }
 
 is_charging_economical() {
@@ -1743,6 +1763,37 @@ log_message >&2 "I: Fritz switchable sockets at price ranks:$fritz_switchable_so
 log_message >&2 "I: Shelly switchable sockets at price ranks:$shelly_switchable_sockets_table"
 
 # 6. Entscheidungen treffen
+
+evaluate_conditions() {
+    local -n conditions=$1
+    local -n descriptions=$2
+    local execute_flag_name=$3
+    local -n condition_met_description=$4
+
+    local flag_value=0
+    condition_met_description=""
+
+    for i in "${!conditions[@]}"; do
+        if (( ${conditions[$i]} )); then
+            flag_value=1
+            condition_met_description="${condition_met_description}${descriptions[$i]}; "
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Condition met: ${descriptions[$i]}"
+            fi
+        fi
+    done
+
+    # Direkte Zuweisung statt printf
+    eval "$execute_flag_name=$flag_value"
+
+    if [ "$flag_value" -eq 0 ]; then
+        condition_met_description=""
+    else
+        condition_met_description="${condition_met_description%; }"
+    fi
+}
+
+# 6. Entscheidungen treffen
 charging_condition_met=""
 discharging_condition_met=""
 switchablesockets_condition_met=""
@@ -1763,39 +1814,99 @@ charging_descriptions=(
 for i in "${!sorted_prices[@]}"; do
     ((i++))
     price_var="P${i}_integer"
-    if [ "${charge_array[$((i-1))]}" -eq 1 ] && [ "${!price_var}" -eq "$current_price_integer" ]; then
-        charging_conditions+=(1)
-        charging_descriptions+=("Charge at price rank $i because ${!price_var} == $current_price_integer")
+    price_diff=$(( ${!price_var} - current_price_integer ))
+
+    # Charging conditions
+    if [ "${charge_array[$((i-1))]}" -eq 1 ]; then
+        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+            charging_conditions+=(1)
+            charging_descriptions+=("Charge at price rank $i because ${!price_var} ~= $current_price_integer")
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Charge condition met at rank $i: Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+            fi
+        else
+            charging_conditions+=(0)
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Charge condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
+            fi
+        fi
     else
         charging_conditions+=(0)
+        if [[ $DEBUG -eq 1 ]]; then
+            log_message "D: Charge condition not met at rank $i: charge_array[$((i-1))]=${charge_array[$((i-1))]} != 1"
+        fi
     fi
 
-    if [ "$SOC_percent" -ge "${discharge_array[$((i-1))]}" ] && [ "${!price_var}" -eq "$current_price_integer" ]; then
-        discharging_conditions+=(1)
-        discharging_descriptions+=("Discharge at price rank $i because SOC ($SOC_percent) >= ${discharge_array[$((i-1))]} and ${!price_var} == $current_price_integer")
+    # Discharging conditions
+    if [ "$SOC_percent" -ge "${discharge_array[$((i-1))]}" ]; then
+        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+            discharging_conditions+=(1)
+            discharging_descriptions+=("Discharge at price rank $i because SOC ($SOC_percent) >= ${discharge_array[$((i-1))]} and ${!price_var} ~= $current_price_integer")
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Discharge condition met at rank $i: SOC=$SOC_percent >= ${discharge_array[$((i-1))]}, Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+            fi
+        else
+            discharging_conditions+=(0)
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Discharge condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
+            fi
+        fi
     else
         discharging_conditions+=(0)
+        if [[ $DEBUG -eq 1 ]]; then
+            log_message "D: Discharge condition not met at rank $i: SOC=$SOC_percent < ${discharge_array[$((i-1))]}"
+        fi
     fi
 
-    if [ "${fritzsocket_array[$((i-1))]}" -eq 1 ] && [ "${!price_var}" -eq "$current_price_integer" ]; then
-        fritzsocket_conditions+=(1)
-        fritzsocket_conditions_descriptions+=("Fritz socket on at price rank $i because ${!price_var} == $current_price_integer")
+    # Fritz socket conditions
+    if [ "${fritzsocket_array[$((i-1))]}" -eq 1 ]; then
+        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+            fritzsocket_conditions+=(1)
+            fritzsocket_conditions_descriptions+=("Fritz socket on at price rank $i because ${!price_var} ~= $current_price_integer")
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Fritz socket condition met at rank $i: Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+            fi
+        else
+            fritzsocket_conditions+=(0)
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Fritz socket condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
+            fi
+        fi
     else
         fritzsocket_conditions+=(0)
+        if [[ $DEBUG -eq 1 ]]; then
+            log_message "D: Fritz socket condition not met at rank $i: fritzsocket_array[$((i-1))]=${fritzsocket_array[$((i-1))]} != 1"
+        fi
     fi
 
-    if [ "${shellysocket_array[$((i-1))]}" -eq 1 ] && [ "${!price_var}" -eq "$current_price_integer" ]; then
-        shellysocket_conditions+=(1)
-        shellysocket_conditions_descriptions+=("Shelly socket on at price rank $i because ${!price_var} == $current_price_integer")
+    # Shelly socket conditions
+    if [ "${shellysocket_array[$((i-1))]}" -eq 1 ]; then
+        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+            shellysocket_conditions+=(1)
+            shellysocket_conditions_descriptions+=("Shelly socket on at price rank $i because ${!price_var} ~= $current_price_integer")
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Shelly socket condition met at rank $i: Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+            fi
+        else
+            shellysocket_conditions+=(0)
+            if [[ $DEBUG -eq 1 ]]; then
+                log_message "D: Shelly socket condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
+            fi
+        fi
     else
         shellysocket_conditions+=(0)
+        if [[ $DEBUG -eq 1 ]]; then
+            log_message "D: Shelly socket condition not met at rank $i: shellysocket_array[$((i-1))]=${shellysocket_array[$((i-1))]} != 1"
+        fi
     fi
 done
 
-evaluate_conditions charging_conditions[@] charging_descriptions[@] "execute_charging" "charging_condition_met"
-evaluate_conditions discharging_conditions[@] discharging_descriptions[@] "execute_discharging" "discharging_condition_met"
-evaluate_conditions fritzsocket_conditions[@] fritzsocket_conditions_descriptions[@] "execute_fritzsocket_on" "fritzsocket_condition_met"
-evaluate_conditions shellysocket_conditions[@] shellysocket_conditions_descriptions[@] "execute_shellysocket_on" "shellysocket_condition_met"
+evaluate_conditions charging_conditions charging_descriptions "execute_charging" "charging_condition_met"
+log_message "D: discharging_conditions before evaluate: ${discharging_conditions[*]}"
+evaluate_conditions discharging_conditions discharging_descriptions "execute_discharging" "discharging_condition_met"
+log_message "D: After evaluate_conditions for discharging: execute_discharging=$execute_discharging, condition_met='$discharging_condition_met'"
+evaluate_conditions fritzsocket_conditions fritzsocket_conditions_descriptions "execute_fritzsocket_on" "fritzsocket_condition_met"
+evaluate_conditions shellysocket_conditions shellysocket_conditions_descriptions "execute_shellysocket_on" "shellysocket_condition_met"
 
 if ((reenable_inverting_at_fullbatt == 1)) && ((SOC_percent >= reenable_inverting_at_soc)); then
     log_message >&2 "I: The battery is getting full. Re-enabling inverter. This is important on a DC-AC system to enable grid-feedin."
@@ -1827,7 +1938,7 @@ if ((use_charger != 0)); then
         fi
     fi
 
-    if ((execute_charging == 1)); then
+if ((execute_charging == 1)); then
         economic=""
         if [ "$economic_check" -eq 0 ]; then
             manage_charging "on" "Economical check was not activated. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
@@ -1844,11 +1955,13 @@ if ((use_charger != 0)); then
         manage_charging "off" "Charging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
     fi
 
+    log_message "D: Before discharging decision: execute_discharging=$execute_discharging, inverting=$inverting"
     if ((execute_discharging == 1)); then
         manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
     else
         manage_discharging "off" "Discharging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
     fi
+    log_message "D: After discharging decision: execute_discharging=$execute_discharging, inverting=$inverting"
 else
     log_message "D: Skip charger. Not activated."
 fi
