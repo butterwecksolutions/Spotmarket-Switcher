@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.22-DEV"
+VERSION="2.4.23-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -1119,9 +1119,6 @@ exit_with_cleanup() {
         manage_shelly_sockets "off"
     fi
     cleanup
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Exiting with code $exit_code"
-    fi
     exit "$exit_code"
 }
 
@@ -1882,4 +1879,18 @@ if [ -n "$DEBUG" ]; then
 fi
 
 log_message >&2 "I: Script execution completed."
-exit_with_cleanup 0
+if ((use_charger != 0)); then
+    # Respect the last state set by the script
+    if ((charging == 1)); then
+        log_message >&2 "I: Charging remains ON as per script logic."
+    else
+        log_message >&2 "I: Charging remains OFF as per script logic."
+    fi
+    if ((inverting == 1)); then
+        log_message >&2 "I: Discharging remains ON as per script logic."
+    else
+        log_message >&2 "I: Discharging remains OFF as per script logic."
+    fi
+fi
+cleanup # Only stop keepalive, no state changes
+exit 0
