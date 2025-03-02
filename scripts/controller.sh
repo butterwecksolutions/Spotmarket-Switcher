@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.21-DEV"
+VERSION="2.4.22-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -332,6 +332,7 @@ download_tibber_prices() {
     local file="$2"
     local sleep_time="$3"
 
+    log_message "D: Starting Tibber price download from $url to $file"
     if [ -z "$DEBUG" ]; then
         log_message >&2 "I: Please be patient. First we wait $sleep_time seconds in case the system clock is not synchronized and not to overload the API." false
         sleep "$sleep_time"
@@ -342,6 +343,7 @@ download_tibber_prices() {
         log_message >&2 "E: Download of Tibber prices from '$url' to '$file' failed."
         exit_with_cleanup 1
     fi
+    log_message "D: Raw Tibber response written to $file with $(wc -l < "$file") lines."
 
     sed -n '/"today":/,/"tomorrow":/p' "$file" | sed '$d' | sed '/"today":/d' >"$file15"
     sort -t, -k4 "$file15" >"$file16"
@@ -359,13 +361,8 @@ download_tibber_prices() {
     echo "date_now_day: $timestamp" >>"$file17"
     echo "date_now_day: $timestamp" >>"$file12"
 
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Contents of $file12 after processing:"
-        cat "$file12" >&2
-    fi
-
     if [ ! -s "$file16" ]; then
-        log_message >&2 "E: Tibber prices cannot be extracted to '$file16', please check your internet connection and Tibber API Key. Waiting 120 seconds and fallback to aWATTar API."
+        log_message >&2 "E: Tibber prices cannot be extracted to '$file16', falling back to aWATTar API."
         use_tibber=0
         rm "$file"
         sleep 120
@@ -533,6 +530,7 @@ use_awattar_api() {
         get_current_awattar_day
         if [ "$current_awattar_day" = "$(TZ=$TZ date +%-d)" ]; then
             log_message >&2 "I: aWATTar today-data is up to date." false
+            log_message "D: Using cached today data from $file1."
         else
             log_message >&2 "I: aWATTar today-data is outdated, fetching new data." false
             rm -f "$file1" "$file6" "$file7"
@@ -549,6 +547,7 @@ use_awattar_tomorrow_api() {
         get_current_awattar_day2
         if [ "$current_awattar_day2" = "$(TZ=$TZ date +%-d)" ]; then
             log_message >&2 "I: aWATTar tomorrow-data is up to date." false
+            log_message "D: Using cached tomorrow data from $file2."
         else
             log_message >&2 "I: aWATTar tomorrow-data is outdated, fetching new data." false
             rm -f "$file2"
@@ -587,22 +586,39 @@ use_tibber_api() {
         get_current_tibber_day
         if [ "$current_tibber_day" = "$(TZ=$TZ date +%d)" ]; then
             log_message >&2 "I: Tibber today-data is up to date." false
+            log_message "D: Using cached data from $file14."
         else
             log_message >&2 "I: Tibber today-data is outdated, fetching new data." false
             rm -f "$file12" "$file14" "$file15" "$file16"
             download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
         fi
     else
-        log_message >&2 "I: Fetching today-data data from Tibber." false
+        log_message >&2 "I: Fetching today-data from Tibber." false
         download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+    fi
+    use_tibber_tomorrow_api
+    if [ "$include_second_day" = 1 ] && [ -s "$file18" ]; then
+        cat "$file16" "$file18" > "$file12"
+        log_message "D: Combined cached today ($file16) and tomorrow ($file18) into $file12."
+    else
+        cp "$file16" "$file12"
+        log_message "D: Only today data used from $file16 to $file12."
     fi
 }
 
 use_tibber_tomorrow_api() {
-    if [ ! -s "$file18" ]; then
-        rm -f "$file17" "$file18"
-        log_message >&2 "I: File '$file18' has no tomorrow data, we have to try it again until the new prices are online." false
-        rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
+    if [ -s "$file18" ]; then
+        tomorrow_day=$(sed -n '/"startsAt":"2025-03-03T00:00:00.000+01:00"/p' "$file18" | wc -l)
+        if [ "$tomorrow_day" -gt 0 ]; then
+            log_message "D: Cached tomorrow data in $file18 is valid for March 3."
+        else
+            log_message >&2 "I: Cached tomorrow data in $file18 is outdated or invalid, fetching new data." false
+            rm -f "$file17" "$file18" "$file12" "$file14" "$file15" "$file16"
+            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+        fi
+    else
+        log_message >&2 "I: No valid tomorrow data in $file18, fetching new data." false
+        rm -f "$file17" "$file18" "$file12" "$file14" "$file15" "$file16"
         download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
     fi
 }
@@ -642,6 +658,7 @@ use_entsoe_api() {
         get_current_entsoe_day
         if [ "$current_entsoe_day" = "$(TZ=$TZ date +%d)" ]; then
             log_message >&2 "I: Entsoe today-data is up to date." false
+            log_message "D: Using cached today data from $file10."
         else
             log_message >&2 "I: Entsoe today-data is outdated, fetching new data." false
             rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
@@ -654,8 +671,18 @@ use_entsoe_api() {
 }
 
 use_entsoe_tomorrow_api() {
-    if [ ! -s "$file9" ]; then
-        log_message >&2 "I: File '$file9' has no tomorrow data, we have to try it again until the new prices are online." false
+    if [ -s "$file9" ]; then
+        # Prüfe, ob Daten für morgen sind (vereinfacht, da XML komplexer ist)
+        tomorrow_check=$(grep "2025-03-03" "$file5" | wc -l)
+        if [ "$tomorrow_check" -gt 0 ]; then
+            log_message "D: Cached tomorrow data in $file9 is valid for March 3."
+        else
+            log_message >&2 "I: Cached tomorrow data in $file9 is outdated or invalid, fetching new data." false
+            rm -f "$file5" "$file9" "$file13"
+            download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
+        fi
+    else
+        log_message >&2 "I: No valid tomorrow data in $file9, fetching new data." false
         rm -f "$file5" "$file9" "$file13"
         download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
     fi
