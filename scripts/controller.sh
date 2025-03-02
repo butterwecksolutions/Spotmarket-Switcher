@@ -907,7 +907,6 @@ manage_shelly_sockets() {
     local action=$1
     [ "$action" != "off" ] && action=$([ "$execute_shellysocket_on" == "1" ] && echo "on" || echo "off")
 
-    # Prüfen, ob der aktuelle Zustand bereits dem gewünschten entspricht
     if [ "$shelly_sockets_state" = "$action" ]; then
         if [ -n "$DEBUG" ]; then
             log_message "D: Shelly sockets already $action, skipping action."
@@ -918,18 +917,17 @@ manage_shelly_sockets() {
     log_message >&2 "I: Turning $action Shelly sockets."
     local success=true
     for ip in "${shelly_ips[@]}"; do
-        if [ "$ip" != "0" ] && [ -n "$ip" ]; then  # Prüfen, ob IP gültig ist
+        if [ "$ip" != "0" ] && [ -n "$ip" ]; then
             manage_shelly_socket "$action" "$ip" || success=false
         else
             log_message >&2 "D: Skipping invalid or empty Shelly IP: $ip"
         fi
     done
 
-    # Zustand nur aktualisieren, wenn alle Schaltvorgänge erfolgreich waren
     if [ "$success" = true ]; then
         shelly_sockets_state="$action"
     else
-        shelly_sockets_state="unknown"  # Zustand zurücksetzen bei Fehler
+        shelly_sockets_state="unknown"
         log_message >&2 "E: One or more Shelly socket actions failed, state set to unknown."
     fi
 }
