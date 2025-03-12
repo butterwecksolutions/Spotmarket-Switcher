@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.24-DEV"
+VERSION="2.4.25-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -738,14 +738,14 @@ use_entsoe_api() {
 get_entsoe_prices() {
     if [ "$ignore_past_hours" -eq 1 ]; then
         current_price=$(sed -n "1p" "$file8" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file19" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file19")
+        average_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19")
     else
         current_price=$(sed -n "${now_linenumber}p" "$file10" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file19" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file19")
+        average_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19")
     fi
     for i in "${!sorted_prices[@]}"; do
         eval "P$((i+1))=${sorted_prices[$i]}"
@@ -1600,7 +1600,8 @@ echo >>"$LOG_FILE"
 log_message >&2 "I: Bash Version: $(bash --version | head -n 1)"
 log_message >&2 "I: Spotmarket-Switcher - Version $VERSION"
 
-# 2. Solarenergie prüfen
+checkAndClean
+
 if ((use_solarweather_api_to_abort == 1)); then
     download_solarenergy
     get_temp_today
@@ -1650,8 +1651,7 @@ else
     log_message "D: Skipping Solarweather. Not activated."
 fi
 
-# 3. Preisdaten beschaffen
-checkAndClean
+
 
 if ((select_pricing_api == 1)); then
     use_awattar_api  # Now handles both today and tomorrow if include_second_day=1
