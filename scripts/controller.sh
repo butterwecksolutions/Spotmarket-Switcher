@@ -1,6 +1,7 @@
 #!/bin/bash
 
-VERSION="2.4.25"
+VERSION="2.4.26"
+
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -1957,7 +1958,7 @@ if ((use_charger != 0)); then
         fi
     fi
 
-if ((execute_charging == 1)); then
+    if ((execute_charging == 1)); then
         economic=""
         if [ "$economic_check" -eq 0 ]; then
             manage_charging "on" "Economical check was not activated. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
@@ -1974,13 +1975,20 @@ if ((execute_charging == 1)); then
         manage_charging "off" "Charging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
     fi
 
-    log_message "D: Before discharging decision: execute_discharging=$execute_discharging, inverting=$inverting"
-    if ((execute_discharging == 1)); then
-        manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+    if ((reenable_inverting_at_fullbatt == 1 && SOC_percent >= reenable_inverting_at_soc)); then
+        # Wenn die Batterie voll ist und die Bedingung erfüllt, bleibt der Inverter aktiviert
+        manage_discharging "on" "Battery is full (SOC >= $reenable_inverting_at_soc%). Re-enabling inverter for grid-feedin."
+    elif ((disable_inverting_while_only_switching == 1 && execute_charging == 0 && (execute_fritzsocket_on == 1 || execute_shellysocket_on == 1))); then
+        # Nur wenn die Batterie nicht voll ist, wird der Inverter deaktiviert, falls nur Schaltvorgänge aktiv sind
+        manage_discharging "off" "Only switching active and charging is too expensive. Disabling inverter to preserve battery."
     else
-        manage_discharging "off" "Discharging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        # Normale Logik für das Entladen
+        if ((execute_discharging == 1)); then
+            manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        else
+            manage_discharging "off" "Discharging was not executed. Total charging costs: $(millicentToEuro "$total_cost_integer")€"
+        fi
     fi
-    log_message "D: After discharging decision: execute_discharging=$execute_discharging, inverting=$inverting"
 else
     log_message "D: Skip charger. Not activated."
 fi
