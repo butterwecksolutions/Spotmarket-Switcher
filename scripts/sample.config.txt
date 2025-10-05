@@ -27,7 +27,7 @@ select_pricing_api=1
 #   Entsoe:  Many more countrys available but free API key needed, see https://www.entsoe.eu/data/map/
 
 # Include prices for the next day in calculations:
-# 0 = No (use only today's prices), 1 = Yes use todays and tomorrows prices when available today in the afternoon.
+# 0 = No (use only today's prices), 1 = Yes use todays and tomorrows prices when available today in the afternoon (recommended).
 include_second_day=1
 # Ignore past hours when second day is enabled:
 # 0 = Do not ignore past hours, 1 = Ignore past hours when second day is enabled.

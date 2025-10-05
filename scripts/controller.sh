@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.1"
+VERSION="2.5.2"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -1226,14 +1226,9 @@ use_tibber_api() {
     fi
 }
 
-
 get_tibber_prices() {
     if [ "$ignore_past_hours" -eq 1 ]; then
-        current_price=$(sed -n "1p" "$file15" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "")
-        if [ -z "$current_price" ]; then
-            current_price=$(sed -n "1p" "$file12" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
-            log_message >&2 "W: Could not determine current price for hour $current_hour from $file15, using first filtered price: $current_price"
-        fi
+        current_price=$(sed -n "1p" "$file11" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
         average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}' || echo "0")
         highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g | tail -n1 || echo "0")
         mapfile -t sorted_prices < <(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g)
