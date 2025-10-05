@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.4.26"
+VERSION="2.4.27"
 
 
 if [ -z "$LANG" ]; then
