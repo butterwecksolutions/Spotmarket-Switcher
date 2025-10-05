@@ -1,23 +1,40 @@
 #!/bin/bash
 
-VERSION="2.4.27"
-
+VERSION="2.5.1-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
 fi
 
-# Note: This script is only for hourly-based tariff data, please create your own fork for higher resolutions like 15 minute intervals.
+update_crontab() {
+    temp_cron=$(mktemp)
+    crontab -l > "$temp_cron"
+    if grep -q "*/15 * * * * .*Spotmarket-Switcher/controller.sh" "$temp_cron"; then
+        rm "$temp_cron"
+        return
+    fi
+    sed -i 's/^0 \* \* \* \* \(.*Spotmarket-Switcher\/controller\.sh\)$/\/*\/15 \* \* \* \* \1/' "$temp_cron"
+
+    if grep -q "*/15 * * * * .*Spotmarket-Switcher/controller.sh" "$temp_cron"; then
+        echo "Spotmarket-Switcher crontab entry successfully updated to 15-minute intervals."
+        crontab "$temp_cron"
+    else
+        echo "The hourly entry was not found. No changes made."
+    fi
+    rm "$temp_cron"
+}
+
+update_crontab
 
 #######################################
 ###    Begin of the functions...    ###
 #######################################
 
 if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
-    valid_config_version=9 # Please increase this value by 1 when changing the configuration variables
+    valid_config_version=12 # Please increase this value by 1 when changing the configuration variables
 else
     declare -A valid_vars=(
-    	["config_version"]="11" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
+    	["config_version"]="12" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
         ["use_fritz_dect_sockets"]="0|1"
         ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
         ["user"]="string"
@@ -83,7 +100,7 @@ parse_and_validate_config() {
     if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
         # Simplified validation for Bash <= 4 (e.g., macOS Bash 3.2)
         log_message >&2 "W: Due to the older Bash version, detailed configuration validation is skipped."
-        valid_config_version=11 # Match the new version requirement
+        valid_config_version=12 # Match the new version requirement
         while IFS='=' read -r key value; do
             key=$(echo "$key" | cut -d'#' -f1 | tr -d ' ')
             value=$(echo "$value" | awk -F'#' '{gsub(/^ *"|"$|^ *| *$/, "", $1); print $1}')
@@ -103,7 +120,7 @@ parse_and_validate_config() {
     else    
         # Advanced validation for Bash > 4
         declare -A valid_vars=(
-            ["config_version"]="11" # Updated to 11 for the new version
+            ["config_version"]="12" # Updated to 12 for the new version
             ["use_fritz_dect_sockets"]="0|1"
             ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
             ["user"]="string"
@@ -194,7 +211,7 @@ parse_and_validate_config() {
             echo -e "$errors"
             return 1
         elif [[ "$version_valid" == false ]]; then
-            log_message >&2 "E: Error: config_version=11 is missing."
+            log_message >&2 "E: Error: config_version=12 is missing."
             return 1
         else
             echo "Config validation passed."
@@ -231,10 +248,13 @@ check_tools() {
 }
 
 cleanup() {
+    rm -f "/tmp/prices_filtered.tmp"
+    rm -f "/tmp/prices_sorted_filtered.tmp"
+    
     if [ -n "$keepalive_pid" ] && kill -0 "$keepalive_pid" 2>/dev/null; then
         log_message >&2 "I: Attempting to stop keepalive process with PID $keepalive_pid."
         kill "$keepalive_pid" 2>/dev/null
-        sleep 1  # Kurze Wartezeit, um dem Prozess Zeit zum Beenden zu geben
+        sleep 1
         if kill -0 "$keepalive_pid" 2>/dev/null; then
             log_message >&2 "I: Keepalive process $keepalive_pid still running, forcing termination with SIGKILL."
             kill -9 "$keepalive_pid" 2>/dev/null
@@ -251,22 +271,40 @@ cleanup() {
 }
 
 download_awattar_prices() {
+
+        log_message >&2 "I: aWATTar API supports only hourly prices. Converting to 15-min prices."
+
+
     local url="$1"
     local file="$2"
     local output_file="$3"
     local sleep_time="$4"
 
-    if [ -z "$DEBUG" ]; then
-        log_message >&2 "I: Please be patient. First we wait $sleep_time seconds in case the system clock is not synchronized and not to overload the API." false
-        sleep "$sleep_time"
-    fi
-    if ! curl "$url" >"$file"; then
-        log_message >&2 "E: Download of aWATTar prices from '$url' to '$file' failed."
-        rm "$file"
+    # Validate inputs
+    if [ -z "$url" ]; then
+        log_message >&2 "E: aWATTar API URL is empty or unset."
         exit_with_cleanup 1
     fi
-    if ! test -f "$file"; then
-        log_message >&2 "E: Could not get aWATTar prices from '$url' to feed file '$file'."
+    if [ -z "$sleep_time" ] || ! [[ "$sleep_time" =~ ^[0-9]+$ ]]; then
+        log_message >&2 "W: Invalid or empty sleep_time '$sleep_time', defaulting to 15 seconds."
+        sleep_time=15
+    fi
+
+    if [ -z "$DEBUG" ]; then
+        log_message >&2 "I: Please be patient. First we wait $sleep_time seconds in case the system clock is not synchronized and not to overload the API."
+        sleep "$sleep_time"
+    else
+        log_message "D: No delay of download of aWATTar data since DEBUG variable set."
+    fi
+
+    # Download raw data
+    if ! curl -s "$url" >"$file"; then
+        log_message >&2 "E: Download of aWATTar prices from '$url' to '$file' failed."
+        rm -f "$file"
+        exit_with_cleanup 1
+    fi
+    if [ ! -s "$file" ]; then
+        log_message >&2 "E: Downloaded file $file is empty, please check aWATTar API URL."
         exit_with_cleanup 1
     fi
     if [ -n "$DEBUG" ]; then
@@ -274,25 +312,36 @@ download_awattar_prices() {
     fi
     echo >>"$file"
 
+    # Parse prices and repeat each hourly price 4 times for 15-min prices
     if [ "$price_unit" = "energy" ]; then
-        awk '/data_price_hour_rel_.*_amount: / {print substr($0, index($0, ":") + 2)}' "$file" > "$output_file"
+        awk '/data_price_hour_rel_.*_amount: / {
+            amount = substr($0, index($0, ":") + 2);
+            for (i = 1; i <= 4; i++) print amount
+        }' "$file" > "$output_file"
     elif [ "$price_unit" = "total" ]; then
         awk -v vat_rate="$vat_rate" -v energy_fee="$energy_fee" '
         /data_price_hour_rel_.*_amount: / {
             amount = substr($0, index($0, ":") + 2);
             total = amount * (1 + vat_rate) + energy_fee;
-            print total
+            for (i = 1; i <= 4; i++) print total
         }' "$file" > "$output_file"
     elif [ "$price_unit" = "tax" ]; then
         awk -v vat_rate="$vat_rate" -v energy_fee="$energy_fee" '
         /data_price_hour_rel_.*_amount: / {
             amount = substr($0, index($0, ":") + 2);
             tax = (amount * vat_rate) + energy_fee;
-            print tax
+            for (i = 1; i <= 4; i++) print tax
         }' "$file" > "$output_file"
     else
-        log_message >&2 "E: Invalid value at awattar_prices. Check config.txt"
-        exit 1
+        log_message >&2 "E: Invalid value for price_unit in config.txt."
+        exit_with_cleanup 1
+    fi
+
+    # Validate price count
+    local line_count=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$output_file" | wc -l)
+    if [ "$line_count" -lt $prices_per_day ]; then
+        log_message >&2 "E: $output_file has only $line_count prices, expected $prices_per_day."
+        exit_with_cleanup 1
     fi
 
     sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
@@ -308,17 +357,23 @@ download_awattar_prices() {
         cat "${output_file%.*}_sorted.${output_file##*.}" >&2
     fi
 
-    if [ -f "$file2" ] && [ "$(wc -l <"$file1")" = "$(wc -l <"$file2")" ]; then
-        rm -f "$file2"
-        log_message >&2 "I: File '$file2' has no tomorrow data, we have to try it again until the new prices are online." false
+    # Check for tomorrow data
+    if [ -f "$file2" ] && [ "$include_second_day" -eq 1 ]; then
+        local tomorrow_count=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file2" | wc -l)
+        if [ "$tomorrow_count" -lt $prices_per_day ]; then
+            log_message >&2 "I: File '$file2' has insufficient tomorrow data ($tomorrow_count prices), retry later."
+            rm -f "$file2"
+        fi
     fi
 }
 
 get_tibber_api() {
+    resolution_param="(resolution: QUARTER_HOURLY)"
+
     curl --location --request POST $link6 \
         --header 'Content-Type: application/json' \
         --header "Authorization: Bearer $tibber_api_key" \
-        --data-raw '{"query":"{viewer{homes{currentSubscription{priceInfo{current{total energy tax startsAt}today{total energy tax startsAt}tomorrow{total energy tax startsAt}}}}}}"}' |
+        --data-raw "{\"query\":\"{viewer{homes{currentSubscription{priceInfo${resolution_param}{current{total energy tax startsAt}today{total energy tax startsAt}tomorrow{total energy tax startsAt}}}}}}\"}" |
         awk '{
         gsub(/"current":/, "\n&");
         gsub(/"today":/, "\n&");
@@ -370,12 +425,13 @@ download_tibber_prices() {
         select_pricing_api="1"
         use_awattar_api
         if [ -f "$file2" ] && [ "$(wc -l <"$file2")" -gt 10 ]; then
-            loop_hours=48
+            loop_prices= $((prices_per_day * 2))
         fi
     fi
 }
 
 download_entsoe_prices() {
+ 
     local url="$1"
     local file="$2"
     local output_file="$3"
@@ -414,14 +470,14 @@ download_entsoe_prices() {
         error_message = ""
         last_price = ""
         current_position = 1
-        max_positions = 24
+        max_positions = '"$prices_per_day"'
         for (i = 1; i <= max_positions; i++) {
             positions[i] = ""
         }
     }
     /<Period>/ { capture_period = 1 }
     /<\/Period>/ { capture_period = 0; valid_period = 0 }
-    capture_period && /<resolution>PT60M<\/resolution>/ { valid_period = 1 }
+    capture_period && /<resolution>'"$resolution"'<\/resolution>/ { valid_period = 1 }
     valid_period && /<position>/ {
         gsub("<position>", "", $0); gsub("</position>", "", $0); gsub(/^[\t ]+|[\t ]+$/, "", $0)
         current_position = $0
@@ -448,8 +504,8 @@ download_entsoe_prices() {
     if [ -f "$output_file" ]; then
         sort -g "$output_file" > "${output_file%.*}_sorted.${output_file##*.}"
         line_count=$(grep -v "^date_now_day" "$output_file" | wc -l)
-        if [ "$line_count" -lt 24 ]; then
-            log_message >&2 "E: Warning. $output_file has only price data for $line_count hours. Maybe API error. Please check XML data if hours are missing."
+        if [ "$line_count" -lt $prices_per_day ]; then
+            log_message >&2 "E: Warning. $output_file has only price data for $line_count prices. Maybe API error. Please check XML data if prices are missing."
             log_message >&2 "E: Fallback to aWATTar API."
             select_pricing_api="1"
             use_awattar_api
@@ -459,18 +515,18 @@ download_entsoe_prices() {
         echo "date_now_day: $timestamp" >>"$output_file"
         echo "date_now_day: $timestamp" >>"${output_file%.*}_sorted.${output_file##*.}"
 
-        if [ "$include_second_day" = 1 ] && grep -q "PT60M" "$file" && [ "$(wc -l <"$output_file")" -gt 3 ]; then
+        if [ "$include_second_day" = 1 ] && grep -q "$resolution" "$file" && [ "$(wc -l <"$output_file")" -gt 3 ]; then
             cat "$file10" > "$file8"
             if [ -f "$file13" ]; then
                 cat "$file13" >> "$file8"
             fi
-            sed -i '25d;50d' "$file8"
+            sed -i "$((prices_per_day +1))d;$((prices_per_day *2 +1))d" "$file8"
             sort -g "$file8" > "$file19"
             echo "date_now_day: $timestamp" >>"$file8"
             if [ -f "$file9" ]; then
                 line_count2=$(grep -v "^date_now_day" "$file9" | wc -l)
-                if [ "$line_count2" -lt 24 ]; then
-                    log_message >&2 "E: Warning. $file9 has only price data for $line_count2 hours. Maybe API error. Please check XML data if hours are missing."
+                if [ "$line_count2" -lt $prices_per_day ]; then
+                    log_message >&2 "E: Warning. $file9 has only price data for $line_count2 prices. Maybe API error. Please check XML data if prices are missing."
                 fi
             fi
         else
@@ -517,287 +573,9 @@ download_solarenergy() {
             log_message >&2 "E: Could not find downloaded file '$file3' with solarenergy data. Solarenergy will be ignored."
         fi
         if [ -n "$DEBUG" ]; then
-            log_message "D: Solarenergy data downloaded to file '$file3'."
+            log_message "D: Solarenergy data downloaded successfully."
         fi
     fi
-}
-
-get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo '[0-9]+'); }
-get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
-
-use_awattar_api() {
-    local today=$(TZ=$TZ date +%d)
-    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
-    local current_hour=$(TZ=$TZ date +%H)
-
-    # Fetch today’s data (24 hours)
-    if test -f "$file1"; then
-        local file_day=$(grep "date_now_day" "$file1" | tail -n1 | awk '{print $2}' | tr -d ':')
-        if [ "$file_day" = "$today" ]; then
-            log_message >&2 "I: aWATTar today-data is up to date." false
-            log_message "D: Using cached today data from $file1."
-        else
-            log_message >&2 "I: aWATTar today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
-            rm -f "$file1" "$file6" "$file7"
-            download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: No cached aWATTar today-data, fetching new data." false
-        download_awattar_prices "$link1" "$file1" "$file6" $((RANDOM % 21 + 10))
-    fi
-
-    # Handle tomorrow’s data if include_second_day=1
-    if [ "$include_second_day" = 1 ]; then
-        if [ "$current_hour" -ge 13 ]; then
-            if [ ! -s "$file2" ] || ! grep -q "$tomorrow" "$file2"; then
-                log_message >&2 "W: Tomorrow data missing or outdated after 13:00, forcing refresh."
-                rm -f "$file2" "$file7"
-                download_awattar_prices "$link2" "$file2" "$file7" $((RANDOM % 21 + 10))
-                # Extract only tomorrow’s 24 hours (skip first 24 lines of today)
-                tail -n +25 "$file7" | head -n 24 > "$file7.tomorrow"
-                # Combine today’s 24 hours with tomorrow’s 24 hours
-                cat "$file6" "$file7.tomorrow" > "$file6.temp"
-                mv "$file6.temp" "$file6"
-                sort -g "$file6" > "$file7"
-                echo "date_now_day: $today" >> "$file6"
-                echo "date_now_day: $today" >> "$file7"
-                log_message "D: Combined today ($file6, 24h) and tomorrow ($file7.tomorrow, 24h) into $file6 and sorted into $file7."
-            else
-                log_message "D: Cached tomorrow data in $file2 is valid for $tomorrow."
-                # Process cached tomorrow data, extract only tomorrow’s 24 hours
-                download_awattar_prices "$link2" "$file2" "$file7" 0  # Reprocess cached file2 into file7
-                tail -n +25 "$file7" | head -n 24 > "$file7.tomorrow"
-                # Combine today’s 24 hours with tomorrow’s 24 hours
-                cat "$file6" "$file7.tomorrow" > "$file6.temp"
-                mv "$file6.temp" "$file6"
-                sort -g "$file6" > "$file7"
-                echo "date_now_day: $today" >> "$file6"
-                echo "date_now_day: $today" >> "$file7"
-                log_message "D: Combined cached today ($file6, 24h) and tomorrow ($file7.tomorrow, 24h) into $file6 and sorted into $file7."
-            fi
-        else
-            log_message "D: Before 13:00, not checking tomorrow data."
-        fi
-    fi
-}
-
-
-get_awattar_prices() {
-    if [ "$ignore_past_hours" -eq 1 ]; then
-        current_price=$(sed -n "1p" "$file6" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file7")
-    else
-        current_price=$(sed -n "$((now_linenumber))p" "$file6" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file7")
-    fi
-    for i in "${!sorted_prices[@]}"; do
-        eval "P$((i+1))=${sorted_prices[$i]}"
-    done
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
-        log_message "D: Sorted prices from $file7:"
-        cat "$file7" >&2
-    fi
-}
-
-use_tibber_api() {
-    local today=$(TZ=$TZ date +%d)
-    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
-    local current_hour=$(TZ=$TZ date +%H)
-
-    # Fetch today’s (and potentially tomorrow’s) data
-    if test -f "$file14"; then
-        local file_day=$(grep "date_now_day" "$file14" | tail -n1 | awk '{print $2}' | tr -d ':')
-        if [ "$file_day" = "$today" ]; then
-            log_message >&2 "I: Tibber today-data is up to date." false
-            log_message "D: Using cached data from $file14 for today."
-        else
-            log_message >&2 "I: Tibber today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
-            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
-            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: No cached Tibber today-data, fetching new data." false
-        rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
-        download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-    fi
-
-    # Check if tomorrow’s data is missing after 13:00 and include_second_day=1
-    if [ "$include_second_day" = 1 ] && [ "$current_hour" -ge 13 ]; then
-        if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
-            log_message >&2 "W: Tomorrow data missing or outdated after 13:00, forcing refresh."
-            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
-            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
-        fi
-    fi
-
-    # Combine today’s and tomorrow’s data based on include_second_day
-    if [ "$include_second_day" = 1 ]; then
-        if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
-            log_message >&2 "I: No valid tomorrow data in $file18 for $tomorrow or file empty, relying on fresh fetch." false
-            # download_tibber_prices already fetched both days
-            cat "$file16" "$file18" > "$file12"
-            log_message "D: Combined today ($file16) and tomorrow ($file18) into $file12 from fresh fetch."
-        else
-            log_message "D: Cached tomorrow data in $file18 is valid for $tomorrow."
-            cat "$file16" "$file18" > "$file12"
-            log_message "D: Combined cached today ($file16) and tomorrow ($file18) into $file12."
-        fi
-    else
-        cp "$file16" "$file12"
-        log_message "D: Using only today’s data ($file16) in $file12 as include_second_day=0."
-    fi
-}
-
-
-get_tibber_prices() {
-    if [ "$ignore_past_hours" -eq 1 ]; then
-        current_price=$(sed -n "$((current_hour + 1))p" "$file15" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "")
-        if [ -z "$current_price" ]; then
-            current_price=$(sed -n "1p" "$file12" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
-            log_message >&2 "W: Could not determine current price for hour $current_hour from $file15, using first filtered price: $current_price"
-        fi
-        average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}' || echo "0")
-        highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g | tail -n1 || echo "0")
-        mapfile -t sorted_prices < <(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g)
-    else
-        current_price=$(sed -n "${now_linenumber}p" "$file15" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
-        average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}' || echo "0")
-        highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g | tail -n1 || echo "0")
-        mapfile -t sorted_prices < <(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g)
-    fi
-    for i in "${!sorted_prices[@]}"; do
-        eval "P$((i+1))=${sorted_prices[$i]}"
-    done
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
-        log_message "D: Sorted prices from $file12:"
-        cat "$file12" >&2
-    fi
-}
-
-get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo '[0-9]+'); }
-
-get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
-
-use_entsoe_api() {
-    local today=$(TZ=$TZ date +%d)
-    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
-    local current_hour=$(TZ=$TZ date +%H)
-
-    # Fetch today’s data
-    if test -f "$file10"; then
-        local file_day=$(grep "date_now_day" "$file10" | tail -n1 | awk '{print $2}' | tr -d ':')
-        if [ "$file_day" = "$today" ]; then
-            log_message >&2 "I: Entsoe today-data is up to date." false
-            log_message "D: Using cached today data from $file10."
-        else
-            log_message >&2 "I: Entsoe today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
-            rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
-            download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
-        fi
-    else
-        log_message >&2 "I: No cached Entsoe today-data, fetching new data." false
-        download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
-    fi
-    sort -g "$file10" > "$file11"  # Ensure today’s data is sorted
-    cp "$file11" "$file19"         # Default output file
-
-    # Handle tomorrow’s data if include_second_day=1
-    if [ "$include_second_day" = 1 ]; then
-        if [ "$current_hour" -ge 13 ]; then
-            if [ ! -s "$file13" ] || ! grep -q "$tomorrow" "$file5"; then
-                log_message >&2 "W: Tomorrow data missing or outdated after 13:00, forcing refresh."
-                rm -f "$file5" "$file9" "$file13"
-                download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
-                # Combine today and tomorrow
-                cat "$file10" "$file13" > "$file8"
-                sed -i '25d;50d' "$file8"  # Remove duplicate timestamps if any
-                sort -g "$file8" > "$file19"
-                echo "date_now_day: $today" >> "$file8"
-                log_message "D: Combined today ($file10) and tomorrow ($file13) into $file19."
-            else
-                log_message "D: Cached tomorrow data in $file13 is valid for $tomorrow."
-                # Combine cached today and tomorrow
-                cat "$file10" "$file13" > "$file8"
-                sed -i '25d;50d' "$file8"
-                sort -g "$file8" > "$file19"
-                echo "date_now_day: $today" >> "$file8"
-                log_message "D: Combined cached today ($file10) and tomorrow ($file13) into $file19."
-            fi
-        else
-            log_message "D: Before 13:00, not checking tomorrow data."
-        fi
-    fi
-}
-
-
-get_entsoe_prices() {
-    if [ "$ignore_past_hours" -eq 1 ]; then
-        current_price=$(sed -n "1p" "$file8" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19")
-    else
-        current_price=$(sed -n "${now_linenumber}p" "$file10" | grep -v "date_now_day")
-        average_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-        highest_price=$(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19" | tail -n1)
-        mapfile -t sorted_prices < <(grep -E '^[0-9]+(\.[0-9]+)?$' "$file19")
-    fi
-    for i in "${!sorted_prices[@]}"; do
-        eval "P$((i+1))=${sorted_prices[$i]}"
-    done
-    if [ -n "$DEBUG" ]; then
-        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
-        log_message "D: Sorted prices from $file19:"
-        cat "$file19" >&2
-    fi
-}
-
-convert_vars_to_integer() {
-    local potency="$1"
-    shift
-    for var in "$@"; do
-        local integer_var="${var}_integer"
-        printf -v "$integer_var" '%s' "$(euroToMillicent "${!var}" "$potency")"
-        local value="${!integer_var}"
-        if [ -n "$DEBUG" ]; then
-            log_message "D: Variable: $var | Original: ${!var} | Integer: $value | Len: ${#value}"
-        fi
-    done
-}
-
-get_awattar_prices_integer() {
-    local price_vars=()
-    for i in $(seq 1 "$loop_hours"); do
-        price_vars+=("P$i")
-    done
-    price_vars+=(average_price highest_price current_price start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh)
-    convert_vars_to_integer 15 "${price_vars[@]}"
-}
-
-get_tibber_prices_integer() {
-    local price_vars=()
-    for i in $(seq 1 "$loop_hours"); do
-        price_vars+=("P$i")
-    done
-    price_vars+=(average_price highest_price current_price)
-    convert_vars_to_integer 17 "${price_vars[@]}"
-    convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
-}
-
-get_prices_integer_entsoe() {
-    local price_vars=()
-    for i in $(seq 1 "$loop_hours"); do
-        price_vars+=("P$i")
-    done
-    price_vars+=(average_price highest_price current_price)
-    convert_vars_to_integer 14 "${price_vars[@]}"
-    convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
 }
 
 get_temp_today() {
@@ -871,28 +649,17 @@ evaluate_conditions() {
     condition_met_description=""
 
     for i in "${!conditions[@]}"; do
-        if [[ $DEBUG -eq 1 ]]; then
-            log_message "D: Checking condition[$i]=${conditions[$i]}"
-        fi
         if (( ${conditions[$i]} )); then
             flag_value=1
             condition_met_description="${condition_met_description}${descriptions[$i]}; "
             if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Condition met: ${descriptions[$i]} (flag_value set to 1)"
+                log_message "D: Condition met: ${descriptions[$i]}"
             fi
         fi
     done
 
-    # Direkte Zuweisung statt declare -g
-    if [ "$execute_flag_name" = "execute_discharging" ]; then
-        execute_discharging=$flag_value
-    elif [ "$execute_flag_name" = "execute_charging" ]; then
-        execute_charging=$flag_value
-    # Fügen Sie weitere elif-Blöcke für andere Flags hinzu, falls nötig
-    fi
-    if [[ $DEBUG -eq 1 ]]; then
-        log_message "D: Set $execute_flag_name=$flag_value"
-    fi
+    # Direkte Zuweisung statt printf
+    eval "$execute_flag_name=$flag_value"
 
     if [ "$flag_value" -eq 0 ]; then
         condition_met_description=""
@@ -1218,64 +985,393 @@ fetch_prices() {
 
 ignore_past_prices() {
     if (( ignore_past_hours == 1 )); then
-        current_hour=$(TZ=$TZ date +%H)
-        current_hour=$((10#$current_hour))
-        lines_to_skip=$current_hour
-        
+        local current_hour=$(TZ=$TZ date +%H)
+        local current_min=$(TZ=$TZ date +%M)
+        local prices_to_skip=$((10#$current_hour * (60 / 15) + 10#$current_min / 15))
+
+        local price_file_source
+        local sorted_file_source
+        local price_file_filtered="/tmp/prices_filtered.tmp"
+        local sorted_file_filtered="/tmp/prices_sorted_filtered.tmp"
+
         case "$select_pricing_api" in
-            1)
-                price_file="$file6"
-                sorted_file="$file7"
-                sort_data=true
+            1) # aWATTar
+                price_file_source="$file6"
+                sorted_file_source="$file7"
                 ;;
-            2)
-                price_file="$file8"
-                sorted_file="$file19"
-                sort_data=true
+            2) # Entsoe
+                price_file_source="$file8"
+                sorted_file_source="$file19"
                 ;;
-            3)
-                price_file="$file12"
-                sorted_file=""
-                sort_data=false
+            3) # Tibber
+                price_file_source="$file12"
+                sorted_file_source="$file12"
                 ;;
             *)
                 log_message >&2 "E: Invalid value for select_pricing_api: $select_pricing_api"
                 exit 1
                 ;;
         esac
-        
-        available_lines=$(grep -v "date_now_day" "$price_file" | wc -l)
-        
+
+        local available_lines=$(grep -v "date_now_day" "$price_file_source" | wc -l | tr -d ' ')
+
         if [ "$available_lines" -eq 0 ]; then
-            log_message >&2 "E: No price data available in $price_file."
-            loop_hours=0
-        elif [ "$lines_to_skip" -ge "$available_lines" ]; then
-            log_message >&2 "W: All $available_lines prices are in the past. No future prices available."
-            loop_hours=0
-        else
-            grep -v "date_now_day" "$price_file" | tail -n +$((lines_to_skip + 1)) > "$price_file.tmp"
-            mv "$price_file.tmp" "$price_file"
-            if [ "$sort_data" = true ]; then
-                grep -v "date_now_day" "$price_file" | sort -g > "$sorted_file"
-                echo "date_now_day: $(TZ=$TZ date +%d)" >> "$sorted_file"
-            fi
-            loop_hours=$(grep -v "date_now_day" "$price_file" | wc -l)
-            log_message >&2 "I: Ignored $lines_to_skip past hours. Remaining hours: $loop_hours."
-            if [ -n "$DEBUG" ]; then
-                log_message "D: Contents of $price_file after filtering:"
-                cat "$price_file" >&2
-                if [ "$sort_data" = true ]; then
-                    log_message "D: Contents of $sorted_file after sorting:"
-                    cat "$sorted_file" >&2
-                fi
-            fi
+            log_message >&2 "E: No price data available in $price_file_source."
+            loop_prices=0
+            return
         fi
-        
-        if [ "$loop_hours" -eq 0 ]; then
-            log_message >&2 "E: No future prices available after ignoring past hours. Script will be terminated."
-            exit 1
+
+        if [ "$prices_to_skip" -ge "$available_lines" ]; then
+            log_message >&2 "W: All $available_lines prices are in the past. No future prices available."
+            loop_prices=0
+            return
+        fi
+
+        log_message >&2 "I: Ignored $prices_to_skip past prices. Remaining prices: $((available_lines - prices_to_skip))."
+
+        grep -v "date_now_day" "$price_file_source" | tail -n +$((prices_to_skip + 1)) > "$price_file_filtered"
+        sort -g "$price_file_filtered" > "$sorted_file_filtered"
+        echo "date_now_day: $(TZ=$TZ date +%d)" >> "$sorted_file_filtered"
+
+        # Die globalen Variablen, die von anderen Funktionen verwendet werden,
+        # werden auf die temporären Dateien umgeleitet.
+        if [ "$select_pricing_api" -eq 1 ]; then
+            file6="$price_file_filtered"
+            file7="$sorted_file_filtered"
+        elif [ "$select_pricing_api" -eq 2 ]; then
+            file8="$price_file_filtered"
+            file19="$sorted_file_filtered"
+        elif [ "$select_pricing_api" -eq 3 ]; then
+            file11="$price_file_filtered"
+            file12="$sorted_file_filtered"
+        fi
+
+        loop_prices=$(grep -v "date_now_day" "$price_file_filtered" | wc -l | tr -d ' ')
+
+        if [ -n "$DEBUG" ]; then
+            log_message "D: Contents of $price_file_filtered after filtering:"
+            cat "$price_file_filtered" >&2
+            log_message "D: Contents of $sorted_file_filtered after sorting:"
+            cat "$sorted_file_filtered" >&2
         fi
     fi
+}
+
+get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo '[0-9]+'); }
+get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
+
+use_awattar_api() {
+
+    local tomorrow_check=0
+    if [ "$include_second_day" = 1 ] && [ "$(TZ=$TZ date +%H)" -ge 13 ]; then
+        tomorrow_check=1
+    fi
+    
+    local api_link="$link1"
+    if [ "$tomorrow_check" -eq 1 ]; then
+        api_link="$link2" # This should point to the URL with ?tomorrow=include
+    fi
+
+    local today=$(TZ=$TZ date +%d)
+
+    # Fetch all data (today + tomorrow if needed) in one call
+    if test -f "$file1"; then
+        local file_day=$(grep "date_now_day" "$file1" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
+            log_message >&2 "I: aWATTar today-data is up to date." false
+            log_message "D: Using cached today data from $file1."
+        else
+            log_message >&2 "I: aWATTar today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
+            rm -f "$file1" "$file6" "$file7"
+            download_awattar_prices "$api_link" "$file1" "$file6" $((RANDOM % 21 + 10))
+        fi
+    else
+        log_message >&2 "I: No cached aWATTar data, fetching new data." false
+        download_awattar_prices "$api_link" "$file1" "$file6" $((RANDOM % 21 + 10))
+    fi
+
+    # After fetching, always sort the combined data to create the sorted file7
+    if [ -f "$file6" ]; then
+        sort -g "$file6" > "$file7"
+    else
+        log_message >&2 "E: Failed to create price file."
+        exit 1
+    fi
+
+    log_message "D: Prices for today+tomorrow combined into $file6 and sorted into $file7."
+    log_message "I: A total of $(grep -v "date_now_day" "$file6" | wc -l | tr -d ' ') 15-minute-prices were fetched."
+}
+
+
+get_awattar_prices() {
+    if [ "$ignore_past_hours" -eq 1 ]; then
+        current_price=$(sed -n "1p" "$file6" | grep -v "date_now_day")
+        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file7")
+    else
+        current_price=$(sed -n "${now_price}p" "$file6" | grep -v "date_now_day")
+        average_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^[0-9]+\.[0-9]+$' "$file7" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^[0-9]+\.[0-9]+$' "$file7")
+    fi
+    for i in "${!sorted_prices[@]}"; do
+        eval "P$((i+1))=${sorted_prices[$i]}"
+    done
+    if [ -n "$DEBUG" ]; then
+        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
+        log_message "D: Sorted prices from $file7:"
+        cat "$file7" >&2
+    fi
+}
+
+process_tibber_data() {
+    local raw_file="$1"
+    if [ ! -s "$raw_file" ]; then
+        log_message >&2 "E: Raw Tibber file $raw_file is empty or missing during processing."
+        return 1
+    fi
+
+    sed -n '/"today":/,/"tomorrow":/p' "$raw_file" | sed '$d' | sed '/"today":/d' >"$file15"
+    sort -t, -k4 "$file15" >"$file16"
+    sed -n '/"tomorrow":/,$p' "$raw_file" | sed '/"tomorrow":/d' >"$file17"
+    sort -t, -k4 "$file17" >"$file18"
+
+    if [ "$include_second_day" = 0 ]; then
+        cp "$file16" "$file12"
+    else
+        cat "$file16" "$file18" > "$file12"
+    fi
+
+    timestamp=$(TZ=$TZ date +%d)
+    echo "date_now_day: $timestamp" >>"$file15"
+    echo "date_now_day: $timestamp" >>"$file17"
+    echo "date_now_day: $timestamp" >>"$file12"
+
+    if [ ! -s "$file16" ]; then
+        log_message >&2 "E: Tibber prices cannot be extracted to '$file16' during processing."
+        return 1
+    fi
+
+    log_message "D: Processed Tibber data into sorted files."
+    return 0
+}
+
+use_tibber_api() {
+    local today=$(TZ=$TZ date +%d)
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+    local current_hour=$(TZ=$TZ date +%H)
+    local needs_processing=true
+
+    # Check for cached raw data
+    if test -f "$file14"; then
+        local file_day=$(grep "date_now_day" "$file14" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
+            log_message >&2 "I: Tibber today-data is up to date." false
+            log_message "D: Using cached data from $file14 for today."
+
+            # Check if processed files are up-to-date
+            if [ -f "$file15" ] && [ "$(grep "date_now_day" "$file15" | tail -n1 | awk '{print $2}' | tr -d ':')" = "$today" ]; then
+                needs_processing=false
+                log_message "D: Processed Tibber files are up-to-date; skipping reprocessing."
+            else
+                log_message "D: Processed Tibber files missing or outdated; reprocessing from cached raw data."
+            fi
+        else
+            log_message >&2 "I: Tibber today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
+            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
+            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+            return  # Download already processes
+        fi
+    else
+        log_message >&2 "I: No cached Tibber today-data, fetching new data." false
+        rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
+        download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+        return
+    fi
+
+    # Reprocess if needed
+    if [ "$needs_processing" = true ]; then
+        process_tibber_data "$file14" || {
+            log_message >&2 "E: Processing failed on cached data; forcing fresh download."
+            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
+            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+            return
+        }
+    fi
+
+    # Check if tomorrow’s data is missing after 13:00 and include_second_day=1
+    if [ "$include_second_day" = 1 ] && [ "$current_hour" -ge 13 ]; then
+        if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
+            log_message >&2 "W: Tomorrow data missing or outdated after 13:00, forcing refresh."
+            rm -f "$file12" "$file14" "$file15" "$file16" "$file17" "$file18"
+            download_tibber_prices "$link6" "$file14" $((RANDOM % 21 + 10))
+            return
+        fi
+    fi
+
+    # Combine today’s and tomorrow’s data based on include_second_day
+    if [ "$include_second_day" = 1 ]; then
+        if [ ! -s "$file18" ] || ! grep -q "$tomorrow" "$file18"; then
+            log_message >&2 "I: No valid tomorrow data in $file18 for $tomorrow or file empty, using only today’s data." false
+            cp "$file16" "$file12"
+        else
+            log_message "D: Valid tomorrow data found in $file18."
+            cat "$file16" "$file18" > "$file12"
+            log_message "D: Combined today ($file16) and tomorrow ($file18) into $file12."
+        fi
+    else
+        cp "$file16" "$file12"
+        log_message "D: Using only today’s data ($file16) in $file12 as include_second_day=0."
+    fi
+}
+
+
+get_tibber_prices() {
+    if [ "$ignore_past_hours" -eq 1 ]; then
+        current_price=$(sed -n "1p" "$file15" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "")
+        if [ -z "$current_price" ]; then
+            current_price=$(sed -n "1p" "$file12" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
+            log_message >&2 "W: Could not determine current price for hour $current_hour from $file15, using first filtered price: $current_price"
+        fi
+        average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}' || echo "0")
+        highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g | tail -n1 || echo "0")
+        mapfile -t sorted_prices < <(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g)
+    else
+        current_price=$(sed -n "${now_price}p" "$file15" | sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" | grep -v "date_now_day" || echo "0")
+        average_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}' || echo "0")
+        highest_price=$(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g | tail -n1 || echo "0")
+        mapfile -t sorted_prices < <(sed -n "s/.*\"${price_unit}\":\([^,]*\),.*/\1/p" "$file12" | grep -v "date_now_day" | sort -g)
+    fi
+    for i in "${!sorted_prices[@]}"; do
+        eval "P$((i+1))=${sorted_prices[$i]}"
+    done
+    if [ -n "$DEBUG" ]; then
+        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
+        log_message "D: Sorted prices from $file12:"
+        cat "$file12" >&2
+    fi
+}
+
+get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo '[0-9]+'); }
+
+get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
+
+use_entsoe_api() {
+        log_message >&2 "I: EntsoE API supports only 15-min prices. Fallback to quarter-hourly mode."
+
+    local today=$(TZ=$TZ date +%d)
+    local tomorrow=$(TZ=$TZ date -d @$(( $(date +%s) + 86400 )) +%Y-%m-%d)
+    local current_hour=$(TZ=$TZ date +%H)
+
+    # Fetch today’s data
+    if test -f "$file10"; then
+        local file_day=$(grep "date_now_day" "$file10" | tail -n1 | awk '{print $2}' | tr -d ':')
+        if [ "$file_day" = "$today" ]; then
+            log_message >&2 "I: Entsoe today-data is up to date." false
+            log_message "D: Using cached today data from $file10."
+        else
+            log_message >&2 "I: Entsoe today-data is outdated or missing (file day: $file_day, today: $today), fetching new data." false
+            rm -f "$file4" "$file5" "$file8" "$file9" "$file10" "$file11" "$file13" "$file19"
+            download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
+        fi
+    else
+        log_message >&2 "I: No cached Entsoe today-data, fetching new data." false
+        download_entsoe_prices "$link4" "$file4" "$file10" $((RANDOM % 21 + 10))
+    fi
+    sort -g "$file10" > "$file11"  # Ensure today’s data is sorted
+    cp "$file11" "$file19"         # Default output file
+
+    # Handle tomorrow’s data if include_second_day=1
+    if [ "$include_second_day" = 1 ]; then
+        if [ "$current_hour" -ge 13 ]; then
+            if [ ! -s "$file13" ] || ! grep -q "$tomorrow" "$file5"; then
+                log_message >&2 "W: Tomorrow data missing or outdated after 13:00, forcing refresh."
+                rm -f "$file5" "$file9" "$file13"
+                download_entsoe_prices "$link5" "$file5" "$file13" $((RANDOM % 21 + 10))
+                # Combine today and tomorrow
+                cat "$file10" "$file13" > "$file8"
+                sed -i "$((prices_per_day +1))d;$((prices_per_day *2 +1))d" "$file8"
+                sort -g "$file8" > "$file19"
+                echo "date_now_day: $today" >> "$file8"
+                log_message "D: Combined today ($file10) and tomorrow ($file13) into $file19."
+            else
+                log_message "D: Cached tomorrow data in $file13 is valid for $tomorrow."
+                # Combine cached today and tomorrow
+                cat "$file10" "$file13" > "$file8"
+                sed -i "$((prices_per_day +1))d;$((prices_per_day *2 +1))d" "$file8"
+                sort -g "$file8" > "$file19"
+                echo "date_now_day: $today" >> "$file8"
+                log_message "D: Combined cached today ($file10) and tomorrow ($file13) into $file19."
+            fi
+        else
+            log_message "D: Before 13:00, not checking tomorrow data."
+        fi
+    fi
+}
+
+get_entsoe_prices() {
+if [ "$ignore_past_hours" -eq 1 ]; then
+current_price=$(sed -n "1p" "$file8" | grep -v "date_now_day")
+average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
+mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
+else
+current_price=$(sed -n "${now_price}p" "$file10" | grep -v "date_now_day")
+average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
+mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
+fi
+for i in "${!sorted_prices[@]}"; do
+eval "P$((i+1))=${sorted_prices[$i]}"
+done
+if [ -n "$DEBUG" ]; then
+log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
+log_message "D: Sorted prices from $file19:"
+cat "$file19" >&2
+fi
+}
+
+convert_vars_to_integer() {
+    local potency="$1"
+    shift
+    for var in "$@"; do
+        local integer_var="${var}_integer"
+        printf -v "$integer_var" '%s' "$(euroToMillicent "${!var}" "$potency")"
+        local value="${!integer_var}"
+        if [ -n "$DEBUG" ]; then
+            log_message "D: Variable: $var | Original: ${!var} | Integer: $value | Len: ${#value}"
+        fi
+    done
+}
+
+get_awattar_prices_integer() {
+    local price_vars=()
+    for i in $(seq 1 "$loop_prices"); do
+        price_vars+=("P$i")
+    done
+    price_vars+=(average_price highest_price current_price start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh)
+    convert_vars_to_integer 15 "${price_vars[@]}"
+}
+
+get_tibber_prices_integer() {
+    local price_vars=()
+    for i in $(seq 1 "$loop_prices"); do
+        price_vars+=("P$i")
+    done
+    price_vars+=(average_price highest_price current_price)
+    convert_vars_to_integer 17 "${price_vars[@]}"
+    convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
+}
+
+get_prices_integer_entsoe() {
+    local price_vars=()
+    for i in $(seq 1 "$loop_prices"); do
+        price_vars+=("P$i")
+    done
+    price_vars+=(average_price highest_price current_price)
+    convert_vars_to_integer 14 "${price_vars[@]}"
+    convert_vars_to_integer 15 start_price feedin_price energy_fee abort_price battery_lifecycle_costs_cent_per_kwh
 }
 
 ####################################
@@ -1309,6 +1405,9 @@ fi
 if ! parse_and_validate_config "$DIR/$CONFIG"; then
     exit 127
 fi
+
+resolution="PT15M"
+prices_per_day=$((1440 / 15))
 
 num_tools_missing=0
 SOC_percent=-1
@@ -1574,8 +1673,8 @@ link3="https://weather.visualcrossing.com/VisualCrossingWebServices/rest/service
 link4="https://web-api.tp.entsoe.eu/api?securityToken=$entsoe_eu_api_security_token&documentType=A44&in_Domain=$in_Domain&out_Domain=$out_Domain&periodStart=$yesteryear$yestermonth$yesterday&periodEnd=$todayyear$todaymonth$today"
 link5="https://web-api.tp.entsoe.eu/api?securityToken=$entsoe_eu_api_security_token&documentType=A44&in_Domain=$in_Domain&out_Domain=$out_Domain&periodStart=$todayyear$todaymonth$today&periodEnd=$tomorrowyear$tomorrowmonth$tomorrow"
 link6="https://api.tibber.com/v1-beta/gql"
-file1=/tmp/awattar_today_prices.yaml
-file2=/tmp/awattar_tomorrow_prices.yaml
+file1=/tmp/awattar_today_prices.json
+file2=/tmp/awattar_tomorrow_prices.json
 file3=/tmp/expected_solarenergy.csv
 file4=/tmp/entsoe_today_prices.xml
 file5=/tmp/entsoe_tomorrow_prices.xml
@@ -1585,11 +1684,11 @@ file8=/tmp/entsoe_prices.txt
 file9=/tmp/entsoe_tomorrow_prices_sorted.txt
 file10=/tmp/entsoe_today_prices.txt
 file11=/tmp/entsoe_today_prices_sorted.txt
-file12=/tmp/tibber_prices_sorted.txt
+file12=/tmp/tibber_prices_sorted_combined.txt
 file13=/tmp/entsoe_tomorrow_prices.txt
-file14=/tmp/tibber_prices.txt
-file15=/tmp/tibber_today_prices.txt
-file16=/tmp/tibber_today_prices_sorted.txt
+file14=/tmp/tibber_prices.json
+file15=/tmp/tibber_prices.txt
+file16=/tmp/tibber_prices_sorted.txt
 file17=/tmp/tibber_tomorrow_prices.txt
 file18=/tmp/tibber_tomorrow_prices_sorted.txt
 file19=/tmp/entsoe_prices_sorted.txt
@@ -1667,14 +1766,14 @@ elif ((select_pricing_api == 3)); then
     fi
 fi
 
-loop_hours=24
+loop_prices=$prices_per_day
 if [ "$include_second_day" = 1 ]; then
     if [ "$select_pricing_api" = 1 ] && [ -f "$file2" ] && [ "$(wc -l <"$file2")" -gt 10 ]; then
-        loop_hours=48
+        loop_prices=$((prices_per_day * 2))
     elif [ "$select_pricing_api" = 2 ] && [ -f "$file13" ] && [ "$(wc -l <"$file13")" -gt 10 ]; then
-        loop_hours=48
+        loop_prices=$((prices_per_day * 2))
     elif [ "$select_pricing_api" = 3 ] && [ -f "$file17" ] && [ "$(wc -l <"$file17")" -gt 10 ]; then
-        loop_hours=48
+        loop_prices=$((prices_per_day * 2))
     fi
 fi
 
@@ -1698,36 +1797,38 @@ if ((abort_price_integer <= current_price_integer)); then
 fi
 
 # 5. Preisdaten verarbeiten
-if [ "$loop_hours" -le 24 ]; then
-    log_message >&2 "I: Using 24-hour config matrix as base, adapting to $loop_hours hours."
-    charge_array=("${config_matrix24_charge[@]}")
-    discharge_array=("${config_matrix24_discharge[@]}")
-    fritzsocket_array=("${config_matrix24_fritzsocket[@]}")
-    shellysocket_array=("${config_matrix24_shellysocket[@]}")
-    
-    if [ "$loop_hours" -lt 24 ]; then
-        log_message >&2 "D: Trimming arrays to $loop_hours hours."
-        charge_array=("${charge_array[@]:0:$loop_hours}")
-        discharge_array=("${discharge_array[@]:0:$loop_hours}")
-        fritzsocket_array=("${fritzsocket_array[@]:0:$loop_hours}")
-        shellysocket_array=("${shellysocket_array[@]:0:$loop_hours}")
+    if [ "$loop_prices" -le 96 ]; then
+        log_message >&2 "I: Using 96-price config matrix as base, adapting to $loop_prices prices."
+        charge_array=("${config_matrix96_charge[@]}")
+        discharge_array=("${config_matrix96_discharge[@]}")
+        fritzsocket_array=("${config_matrix96_fritzsocket[@]}")
+        shellysocket_array=("${config_matrix96_shellysocket[@]}")
+        
+        if [ "$loop_prices" -lt 96 ]; then
+            log_message >&2 "D: Trimming arrays to $loop_prices prices."
+            charge_array=("${charge_array[@]:0:$loop_prices}")
+            discharge_array=("${discharge_array[@]:0:$loop_prices}")
+            fritzsocket_array=("${fritzsocket_array[@]:0:$loop_prices}")
+            shellysocket_array=("${shellysocket_array[@]:0:$loop_prices}")
+        fi
+    else
+        log_message >&2 "I: Using 192-price config matrix as base, adapting to $loop_prices prices."
+        charge_array=("${config_matrix192_charge[@]}")
+        discharge_array=("${config_matrix192_discharge[@]}")
+        fritzsocket_array=("${config_matrix192_fritzsocket[@]}")
+        shellysocket_array=("${config_matrix192_shellysocket[@]}")
+        
+        if [ "$loop_prices" -lt 192 ]; then
+            log_message >&2 "I: Trimming arrays to $loop_prices prices."
+            charge_array=("${charge_array[@]:0:$loop_prices}")
+            discharge_array=("${discharge_array[@]:0:$loop_prices}")
+            fritzsocket_array=("${fritzsocket_array[@]:0:$loop_prices}")
+            shellysocket_array=("${shellysocket_array[@]:0:$loop_prices}")
+        fi
     fi
-elif [ "$loop_hours" -le 48 ]; then
-    log_message >&2 "I: Using 48-hour config matrix as base, adapting to $loop_hours hours."
-    charge_array=("${config_matrix48_charge[@]}")
-    discharge_array=("${config_matrix48_discharge[@]}")
-    fritzsocket_array=("${config_matrix48_fritzsocket[@]}")
-    shellysocket_array=("${config_matrix48_shellysocket[@]}")
-    
-    if [ "$loop_hours" -lt 48 ]; then
-        log_message >&2 "I: Trimming arrays to $loop_hours hours."
-        charge_array=("${charge_array[@]:0:$loop_hours}")
-        discharge_array=("${discharge_array[@]:0:$loop_hours}")
-        fritzsocket_array=("${fritzsocket_array[@]:0:$loop_hours}")
-        shellysocket_array=("${shellysocket_array[@]:0:$loop_hours}")
-    fi
-else
-    log_message >&2 "E: Invalid loop_hours: $loop_hours. Maximum supported hours is 48."
+
+if [ "$loop_prices" -gt $((prices_per_day * 2)) ]; then
+    log_message >&2 "E: Invalid loop_prices: $loop_prices. Maximum supported prices is $((prices_per_day * 2))."
     exit 1
 fi
 
@@ -1769,12 +1870,17 @@ done
 log_message >&2 "I: The average price will be $average_price $Unit."
 log_message >&2 "I: Highest price will be $highest_price $Unit."
 price_table=""
-for i in $(seq 1 "$loop_hours"); do
+i=1
+while true; do
     eval price=\$P$i
+    if [ -z "$price" ]; then
+        break
+    fi
     price_table+="$i:$price "
     if [ $((i % 12)) -eq 0 ]; then
         price_table+="\n                  "
     fi
+    i=$((i+1))
 done
 log_message >&2 "I: Sorted prices (low to high): $price_table"
 log_message >&2 "I: Charge at price ranks:$charge_table"
