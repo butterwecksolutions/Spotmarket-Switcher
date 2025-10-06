@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.2"
+VERSION="2.5.3"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -271,10 +271,7 @@ cleanup() {
 }
 
 download_awattar_prices() {
-
-        log_message >&2 "I: aWATTar API supports only hourly prices. Converting to 15-min prices."
-
-
+    log_message >&2 "I: aWATTar API supports only hourly prices. Converting to 15-min prices."
     local url="$1"
     local file="$2"
     local output_file="$3"
@@ -369,7 +366,6 @@ download_awattar_prices() {
 
 get_tibber_api() {
     resolution_param="(resolution: QUARTER_HOURLY)"
-
     curl --location --request POST $link6 \
         --header 'Content-Type: application/json' \
         --header "Authorization: Bearer $tibber_api_key" \
@@ -658,7 +654,6 @@ evaluate_conditions() {
         fi
     done
 
-    # Direkte Zuweisung statt printf
     eval "$execute_flag_name=$flag_value"
 
     if [ "$flag_value" -eq 0 ]; then
@@ -1057,9 +1052,6 @@ ignore_past_prices() {
     fi
 }
 
-get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo '[0-9]+'); }
-get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
-
 use_awattar_api() {
 
     local tomorrow_check=0
@@ -1248,10 +1240,6 @@ get_tibber_prices() {
     fi
 }
 
-get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo '[0-9]+'); }
-
-get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
-
 use_entsoe_api() {
         log_message >&2 "I: EntsoE API supports only 15-min prices. Fallback to quarter-hourly mode."
 
@@ -1306,25 +1294,27 @@ use_entsoe_api() {
 }
 
 get_entsoe_prices() {
-if [ "$ignore_past_hours" -eq 1 ]; then
-current_price=$(sed -n "1p" "$file8" | grep -v "date_now_day")
-average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
-mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
-else
-current_price=$(sed -n "${now_price}p" "$file10" | grep -v "date_now_day")
-average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
-highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
-mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
-fi
-for i in "${!sorted_prices[@]}"; do
-eval "P$((i+1))=${sorted_prices[$i]}"
-done
-if [ -n "$DEBUG" ]; then
-log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
-log_message "D: Sorted prices from $file19:"
-cat "$file19" >&2
-fi
+    if [ "$ignore_past_hours" -eq 1 ]; then
+        current_price=$(sed -n "1p" "$file8" | grep -v "date_now_day")
+        average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
+    else
+        current_price=$(sed -n "${now_price}p" "$file10" | grep -v "date_now_day")
+        average_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | awk '{sum+=$1; count++} END {if (count > 0) print sum/count}')
+        highest_price=$(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19" | tail -n1)
+        mapfile -t sorted_prices < <(grep -E '^-?[0-9]+(.[0-9]+)?$' "$file19")
+    fi
+
+    for i in "${!sorted_prices[@]}"; do
+        eval "P$((i+1))=${sorted_prices[$i]}"
+    done
+
+    if [ -n "$DEBUG" ]; then
+        log_message "D: Current price: $current_price, Average price: $average_price, Highest price: $highest_price"
+        log_message "D: Sorted prices from $file19:"
+        cat "$file19" >&2
+    fi
 }
 
 convert_vars_to_integer() {
@@ -1604,19 +1594,7 @@ if [ "$use_charger" == "4" ]; then
     }
 fi
 
-for tool in $tools; do
-    if ! which "$tool" >/dev/null; then
-        log_message >&2 "E: Please ensure the tool '$tool' is found."
-        num_tools_missing=$((num_tools_missing + 1))
-    fi
-done
-
-if [ "$num_tools_missing" -gt 0 ]; then
-    log_message >&2 "E: $num_tools_missing tools are missing."
-    exit 127
-fi
-
-unset num_tools_missing
+check_tools "$tools"
 
 if [ -f "$DIR/license.txt" ]; then
     source "$DIR/license.txt"
@@ -1662,6 +1640,7 @@ else
 fi
 
 now_linenumber=$((getnow + 1))
+now_price=$now_linenumber
 link1="https://api.awattar.$awattar/v1/marketdata/current.yaml"
 link2="http://api.awattar.$awattar/v1/marketdata/current.yaml?tomorrow=include"
 link3="https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/$latitude%2C%20$longitude/$todayyear-$todaymonth-$today2/$tomorrowyear-$tomorrowmonth-$tomorrow2?unitGroup=metric&elements=snowdepth%2Ctemp%2Csolarenergy%2Ccloudcover%2Csunrise%2Csunset&include=days&key=$visualcrossing_api_key&contentType=csv"
@@ -1775,7 +1754,6 @@ fi
 ignore_past_prices
 fetch_prices
 
-# 4. Aktuellen Preis prüfen
 log_message >&2 "I: Please verify correct system time and timezone:\n   $(TZ=$TZ date)"
 log_message >&2 "I: Current price is $current_price $Unit."
 
@@ -1791,7 +1769,6 @@ if ((abort_price_integer <= current_price_integer)); then
     exit_with_cleanup 0
 fi
 
-# 5. Preisdaten verarbeiten
     if [ "$loop_prices" -le 96 ]; then
         log_message >&2 "I: Using 96-price config matrix as base, adapting to $loop_prices prices."
         charge_array=("${config_matrix96_charge[@]}")
@@ -1883,38 +1860,6 @@ log_message >&2 "I: Discharge at price ranks (if SOC >= min):$discharge_table"
 log_message >&2 "I: Fritz switchable sockets at price ranks:$fritz_switchable_sockets_table"
 log_message >&2 "I: Shelly switchable sockets at price ranks:$shelly_switchable_sockets_table"
 
-# 6. Entscheidungen treffen
-
-evaluate_conditions() {
-    local -n conditions=$1
-    local -n descriptions=$2
-    local execute_flag_name=$3
-    local -n condition_met_description=$4
-
-    local flag_value=0
-    condition_met_description=""
-
-    for i in "${!conditions[@]}"; do
-        if (( ${conditions[$i]} )); then
-            flag_value=1
-            condition_met_description="${condition_met_description}${descriptions[$i]}; "
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Condition met: ${descriptions[$i]}"
-            fi
-        fi
-    done
-
-    # Direkte Zuweisung statt printf
-    eval "$execute_flag_name=$flag_value"
-
-    if [ "$flag_value" -eq 0 ]; then
-        condition_met_description=""
-    else
-        condition_met_description="${condition_met_description%; }"
-    fi
-}
-
-# 6. Entscheidungen treffen
 charging_condition_met=""
 discharging_condition_met=""
 switchablesockets_condition_met=""
@@ -2037,7 +1982,6 @@ fi
 percent_of_current_price_integer=$(awk "BEGIN {printf \"%.0f\", $current_price_integer*$energy_loss_percent/100}")
 total_cost_integer=$((current_price_integer + percent_of_current_price_integer + battery_lifecycle_costs_cent_per_kwh_integer))
 
-# 7. Steuerung ausführen
 if ((use_charger != 0)); then
     if ((use_solarweather_api_to_abort == 1)) && [ -f "$file3" ] && [ -s "$file3" ]; then
         if awk -v temp="$temp_today" -v snow="$snow_today" 'BEGIN { exit !(temp < 0 && snow > 1) }'; then
@@ -2077,13 +2021,10 @@ if ((use_charger != 0)); then
     fi
 
     if ((reenable_inverting_at_fullbatt == 1 && SOC_percent >= reenable_inverting_at_soc)); then
-        # Wenn die Batterie voll ist und die Bedingung erfüllt, bleibt der Inverter aktiviert
         manage_discharging "on" "Battery is full (SOC >= $reenable_inverting_at_soc%). Re-enabling inverter for grid-feedin."
     elif ((disable_inverting_while_only_switching == 1 && execute_charging == 0 && (execute_fritzsocket_on == 1 || execute_shellysocket_on == 1))); then
-        # Nur wenn die Batterie nicht voll ist, wird der Inverter deaktiviert, falls nur Schaltvorgänge aktiv sind
         manage_discharging "off" "Only switching active and charging is too expensive. Disabling inverter to preserve battery."
     else
-        # Normale Logik für das Entladen
         if ((execute_discharging == 1)); then
             manage_discharging "on" "$discharging_condition_met Total charging costs: $(millicentToEuro "$total_cost_integer")€"
         else
@@ -2106,7 +2047,6 @@ else
     log_message "D: Skip Shelly Api. Not activated."
 fi
 
-# 8. Cleanup und Logging
 echo >>"$LOG_FILE"
 
 if [ -f "$LOG_FILE" ]; then
