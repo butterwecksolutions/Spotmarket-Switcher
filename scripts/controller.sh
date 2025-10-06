@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.2"
+VERSION="2.5.3-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -658,7 +658,6 @@ evaluate_conditions() {
         fi
     done
 
-    # Direkte Zuweisung statt printf
     eval "$execute_flag_name=$flag_value"
 
     if [ "$flag_value" -eq 0 ]; then
@@ -1057,9 +1056,6 @@ ignore_past_prices() {
     fi
 }
 
-get_current_awattar_day() { current_awattar_day=$(sed -n 3p "$file1" | grep -Eo '[0-9]+'); }
-get_current_awattar_day2() { current_awattar_day2=$(sed -n 3p "$file2" | grep -Eo '[0-9]+'); }
-
 use_awattar_api() {
 
     local tomorrow_check=0
@@ -1247,10 +1243,6 @@ get_tibber_prices() {
         cat "$file12" >&2
     fi
 }
-
-get_current_entsoe_day() { current_entsoe_day=$(sed -n 25p "$file10" | grep -Eo '[0-9]+'); }
-
-get_current_tibber_day() { current_tibber_day=$(sed -n 25p "$file15" | grep -Eo '[0-9]+'); }
 
 use_entsoe_api() {
         log_message >&2 "I: EntsoE API supports only 15-min prices. Fallback to quarter-hourly mode."
@@ -1662,6 +1654,7 @@ else
 fi
 
 now_linenumber=$((getnow + 1))
+now_price=$now_linenumber
 link1="https://api.awattar.$awattar/v1/marketdata/current.yaml"
 link2="http://api.awattar.$awattar/v1/marketdata/current.yaml?tomorrow=include"
 link3="https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/$latitude%2C%20$longitude/$todayyear-$todaymonth-$today2/$tomorrowyear-$tomorrowmonth-$tomorrow2?unitGroup=metric&elements=snowdepth%2Ctemp%2Csolarenergy%2Ccloudcover%2Csunrise%2Csunset&include=days&key=$visualcrossing_api_key&contentType=csv"
@@ -1883,38 +1876,8 @@ log_message >&2 "I: Discharge at price ranks (if SOC >= min):$discharge_table"
 log_message >&2 "I: Fritz switchable sockets at price ranks:$fritz_switchable_sockets_table"
 log_message >&2 "I: Shelly switchable sockets at price ranks:$shelly_switchable_sockets_table"
 
-# 6. Entscheidungen treffen
 
-evaluate_conditions() {
-    local -n conditions=$1
-    local -n descriptions=$2
-    local execute_flag_name=$3
-    local -n condition_met_description=$4
 
-    local flag_value=0
-    condition_met_description=""
-
-    for i in "${!conditions[@]}"; do
-        if (( ${conditions[$i]} )); then
-            flag_value=1
-            condition_met_description="${condition_met_description}${descriptions[$i]}; "
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Condition met: ${descriptions[$i]}"
-            fi
-        fi
-    done
-
-    # Direkte Zuweisung statt printf
-    eval "$execute_flag_name=$flag_value"
-
-    if [ "$flag_value" -eq 0 ]; then
-        condition_met_description=""
-    else
-        condition_met_description="${condition_met_description%; }"
-    fi
-}
-
-# 6. Entscheidungen treffen
 charging_condition_met=""
 discharging_condition_met=""
 switchablesockets_condition_met=""
