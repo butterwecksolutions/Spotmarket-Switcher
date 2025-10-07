@@ -13,7 +13,7 @@ TZ="Europe/Amsterdam"
 
 # Configuration file version: Used to ensure compatibility with the Spotmarket-Switcher software.
 # You'll see a warning while running the Spotmarket-Switcher if you are using an outdated config version.
-config_version=12
+config_version=13
 
 #######################
 # API Selection
@@ -274,6 +274,33 @@ shellypasswd="YOURPASSWORD" # only if used
 #######################
 # Config Matrix for Charging/Discharging/Switching
 #######################
+
+# --- Discharge Strategy ---
+# "static" = Use the fixed config_matrix discharge curve.
+# "dynamic" = Calculate discharge slots dynamically based on the SoC matrix below.
+discharge_strategy="dynamic"
+discharge_hours_matrix=(
+    "95 8.0"  # At 95% SoC or higher, target 8.0 discharge hours
+    "20 1.0"  # At 20% SoC or lower, target 1.0 discharge hour
+)
+
+# --- Fritz DECT Sockets Strategy ---
+# "static" = Use the fixed config_matrix_fritzsocket.
+# "dynamic" = Calculate switch-on hours dynamically based on the SoC matrix below.
+fritz_socket_strategy="dynamic"
+fritz_socket_hours_matrix=(
+    "90 6.0"  # At 90% SoC, run devices for 6 hours in the most expensive slots
+    "50 0.0"  # Below 50% SoC, do not run extra devices
+)
+
+# --- Shelly Sockets Strategy ---
+# "static" = Use the fixed config_matrix_shellysocket.
+# "dynamic" = Calculate switch-on hours dynamically based on the SoC matrix below.
+shelly_socket_strategy="dynamic"
+shelly_socket_hours_matrix=(
+    "85 4.0"  # At 85% SoC, run devices for 4 hours in the most expensive slots
+    "60 0.0"  # Below 60% SoC, do not run extra devices
+)
 
 # -----------------------------------------------------------------------------
 # 96-point configuration (24h, 15-min intervals)
