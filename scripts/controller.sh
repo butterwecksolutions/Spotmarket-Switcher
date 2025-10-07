@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.4"
+VERSION="2.5.5-DEV"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -120,7 +120,7 @@ parse_and_validate_config() {
     else    
         # Advanced validation for Bash > 4
         declare -A valid_vars=(
-            ["config_version"]="12" # Updated to 12 for the new version
+            ["config_version"]="13"
             ["use_fritz_dect_sockets"]="0|1"
             ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
             ["user"]="string"
@@ -747,6 +747,58 @@ manage_discharging() {
         inverting=0
         log_message >&2 "I: Discharging is OFF. Battery SOC is at $SOC_percent%."
     fi
+}
+
+get_dynamic_target_hours() {
+    local current_soc=$1
+    local matrix_name=$2
+    local -n matrix_ref="${matrix_name}" # Use nameref to access the specified global array
+
+    # Check if the matrix is defined and not empty
+    if [ -z "${matrix_ref+x}" ] || [ ${#matrix_ref[@]} -eq 0 ]; then
+        # log_message >&2 "W: Matrix '$matrix_name' is not defined or empty. Returning 0 hours."
+        echo "0.0"
+        return
+    fi
+    
+    local result_hours=""
+
+    # Sort the matrix by SoC to ensure correct interpolation
+    IFS=$'\n' sorted_matrix=($(sort -n -k1 <<<"${matrix_ref[*]}"))
+    unset IFS
+
+    # Handle edge case: SoC is lower than the lowest defined point
+    IFS=' ' read -r min_soc min_hours <<< "${sorted_matrix[0]}"
+    if (( $(awk -v current="$current_soc" -v min="$min_soc" 'BEGIN {print (current <= min)}') )); then
+        echo "$min_hours"
+        return
+    fi
+
+    # Handle edge case: SoC is higher than the highest defined point
+    IFS=' ' read -r max_soc max_hours <<< "${sorted_matrix[-1]}"
+    if (( $(awk -v current="$current_soc" -v max="$max_soc" 'BEGIN {print (current >= max)}') )); then
+        echo "$max_hours"
+        return
+    fi
+
+    # Find the two points to interpolate between
+    for ((i = 0; i < ${#sorted_matrix[@]} - 1; i++)); do
+        IFS=' ' read -r lower_soc lower_hours <<< "${sorted_matrix[$i]}"
+        IFS=' ' read -r upper_soc upper_hours <<< "${sorted_matrix[$((i + 1))]}"
+
+        if (( $(awk -v current="$current_soc" -v lower="$lower_soc" -v upper="$upper_soc" 'BEGIN {print (current >= lower && current < upper)}') )); then
+            # Perform linear interpolation
+            result_hours=$(awk -v x="$current_soc" \
+                -v x1="$lower_soc" -v y1="$lower_hours" \
+                -v x2="$upper_soc" -v y2="$upper_hours" \
+                'BEGIN {printf "%.2f", y1 + (x - x1) * (y2 - y1) / (x2 - x1)}')
+            echo "$result_hours"
+            return
+        fi
+    done
+    
+    # Fallback to the minimum hours if no range is found (should not happen with sorted array)
+    echo "$min_hours"
 }
 
 manage_fritz_sockets() {
@@ -1818,24 +1870,83 @@ shelly_sockets_state="unknown"
 fritz_sockets_state="unknown"
 fritz_switchable_sockets_table=""
 shelly_switchable_sockets_table=""
+
+# 1. Calculate Discharge Hours
+discharge_hours="0.0"
+if [ "$discharge_strategy" == "dynamic" ]; then
+    discharge_hours=$(get_dynamic_target_hours "$SOC_percent" "discharge_hours_matrix")
+    log_message >&2 "I: Dynamic Discharge: SoC is $SOC_percent%. Targeting the most expensive $discharge_hours hours."
+fi
+
+# 2. Calculate Fritz Socket ON-Hours
+fritz_hours="0.0"
+if (( use_fritz_dect_sockets == 1 )) && [ "$fritz_socket_strategy" == "dynamic" ]; then
+    fritz_hours=$(get_dynamic_target_hours "$SOC_percent" "fritz_socket_hours_matrix")
+    log_message >&2 "I: Dynamic Fritz Sockets: SoC is $SOC_percent%. Targeting $fritz_hours ON-hours."
+fi
+
+# 3. Calculate Shelly Socket ON-Hours
+shelly_hours="0.0"
+if (( use_shelly_wlan_sockets == 1 )) && [ "$shelly_socket_strategy" == "dynamic" ]; then
+    shelly_hours=$(get_dynamic_target_hours "$SOC_percent" "shelly_socket_hours_matrix")
+    log_message >&2 "I: Dynamic Shelly Sockets: SoC is $SOC_percent%. Targeting $shelly_hours ON-hours."
+fi
+
 for idx in "${!sorted_prices[@]}"; do
     i=$((idx + 1))
     charge_value="${charge_array[$idx]}"
-    discharge_value="${discharge_array[$idx]}"
-    fritzsocket_value="${fritzsocket_array[$idx]}"
-    shellysocket_value="${shellysocket_array[$idx]}"
+    discharge_value="${discharge_array[$idx]}" # For static mode
+    fritzsocket_value="${fritzsocket_array[$idx]}" # For static mode
+    shellysocket_value="${shellysocket_array[$idx]}" # For static mode
 
+    # --- Charge Logic (unchanged) ---
     if [ "$charge_value" -eq 1 ]; then
         charge_table="$charge_table $i"
     fi
-    if [ "$use_charger" -ne 0 ] && [ "$SOC_percent" -ge "$discharge_value" ]; then
-        discharge_table="$discharge_table $i"
+    
+    # --- Universal Dynamic/Static Logic for all components ---
+
+    # 1. Discharge Table Population
+    if [ "$discharge_strategy" == "dynamic" ]; then
+        num_slots=$(awk -v h="$discharge_hours" 'BEGIN {printf "%.0f", h * 4}')
+        start_idx=$(( ${#sorted_prices[@]} - num_slots ))
+        if (( idx >= start_idx && SOC_percent > sonnen_minimum_SoC )); then
+            discharge_table="$discharge_table $i"
+        fi
+    else # Static
+        if [ "$use_charger" -ne 0 ] && [ "$SOC_percent" -ge "$discharge_value" ]; then
+            discharge_table="$discharge_table $i"
+        fi
     fi
-    if [ "$fritzsocket_value" -eq 1 ]; then
-        fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+
+    # 2. Fritz Socket Table Population
+    if (( use_fritz_dect_sockets == 1 )); then
+        if [ "$fritz_socket_strategy" == "dynamic" ]; then
+            num_slots=$(awk -v h="$fritz_hours" 'BEGIN {printf "%.0f", h * 4}')
+            start_idx=$(( ${#sorted_prices[@]} - num_slots ))
+            if (( idx >= start_idx )); then
+                fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+            fi
+        else # Static
+            if [ "$fritzsocket_value" -eq 1 ]; then
+                fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+            fi
+        fi
     fi
-    if [ "$shellysocket_value" -eq 1 ]; then
-        shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+
+    # 3. Shelly Socket Table Population
+    if (( use_shelly_wlan_sockets == 1 )); then
+        if [ "$shelly_socket_strategy" == "dynamic" ]; then
+            num_slots=$(awk -v h="$shelly_hours" 'BEGIN {printf "%.0f", h * 4}')
+            start_idx=$(( ${#sorted_prices[@]} - num_slots ))
+            if (( idx >= start_idx )); then
+                shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+            fi
+        else # Static
+            if [ "$shellysocket_value" -eq 1 ]; then
+                shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+            fi
+        fi
     fi
 done
 
