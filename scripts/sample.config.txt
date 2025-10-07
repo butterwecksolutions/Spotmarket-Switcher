@@ -13,7 +13,7 @@ TZ="Europe/Amsterdam"
 
 # Configuration file version: Used to ensure compatibility with the Spotmarket-Switcher software.
 # You'll see a warning while running the Spotmarket-Switcher if you are using an outdated config version.
-config_version=13
+config_version=14
 
 #######################
 # API Selection
@@ -84,7 +84,7 @@ tibber_api_key="YOURAPIKEY"
 
 # Type of aWATTar & Tibber prices to use:
 # "energy" for spot market prices, "total" for total prices including taxes fees, "tax" for taxes and fees only.
-price_unit=energy
+price_unit=total
 
 
 #######################
@@ -172,7 +172,7 @@ use_start_stop_logic=0
 # These values determine the price points at which different operations are triggered (net prices excl. tax).
 # Note: Always use Cent/kWh, no matter if youre using Awattar (displaying Cent/kWh) or Entsoe API (displaying EUR/MWh).
 start_price=-5.0   # Start operations below this price.
-abort_price=50.1   # Abort operations if price exceeds this value (energy fees not included).
+abort_price=150.1   # Abort operations if price exceeds this value (energy fees not included).
 
 # This setting allows you to control additional devices (like a water heater) using AVM Fritz DECT200/210 or Shelly switchable sockets.
 # 0 = Do not control additional devices based on start/stop logic.
@@ -275,6 +275,16 @@ shellypasswd="YOURPASSWORD" # only if used
 # Config Matrix for Charging/Discharging/Switching
 #######################
 
+# Mini-Matrix for Dynamic SOC-charging-targets Based on Solar Energy:
+# This matrix defines dynamic target SoC values based on expected solar energy (in MJ/m²).
+config_matrix_target_soc_weather=(
+    "1.5 90"  # At 1.5 MJ/m², target SoC is 90%
+    "4.0 20"  # At 4.0 MJ/m², target SoC is 20%
+)
+# Note: # All the other values between this will be calculated automatically.
+# If the sun will be more than 4.0 megajoule, the 20% will still be used as calculation result.
+# If there will be enough sun, the battery capacity will be reserved for solar energy.
+
 # --- Discharge Strategy ---
 # "static" = Use the fixed config_matrix discharge curve.
 # "dynamic" = Calculate discharge slots dynamically based on the SoC matrix below.
@@ -288,22 +298,31 @@ discharge_hours_matrix=(
 # "static" = Use the fixed config_matrix_fritzsocket.
 # "dynamic" = Calculate switch-on hours dynamically based on the SoC matrix below.
 fritz_socket_strategy="dynamic"
+# Price direction for dynamic socket switching:
+# "highest" = Switch on during the most expensive hours (e.g., to run devices from battery/solar, default).
+# "lowest" = Switch on during the cheapest hours (e.g., for cheap charging of devices).
+fritz_socket_price_direction="lowest"
 fritz_socket_hours_matrix=(
-    "90 6.0"  # At 90% SoC, run devices for 6 hours in the most expensive slots
-    "50 0.0"  # Below 50% SoC, do not run extra devices
+    "90 6.0"  # At 90% SoC, run devices for 6 hours
+    "30 0.0"  # Below 30% SoC, do not run extra devices
 )
 
 # --- Shelly Sockets Strategy ---
 # "static" = Use the fixed config_matrix_shellysocket.
 # "dynamic" = Calculate switch-on hours dynamically based on the SoC matrix below.
 shelly_socket_strategy="dynamic"
+# Price direction for dynamic socket switching:
+# "highest" = Switch on during the most expensive hours (e.g., to run devices from battery/solar, default).
+# "lowest" = Switch on during the cheapest hours (e.g., for cheap charging of devices).
+shelly_socket_price_direction="lowest"
 shelly_socket_hours_matrix=(
-    "85 4.0"  # At 85% SoC, run devices for 4 hours in the most expensive slots
+    "85 4.0"  # At 85% SoC, run devices for 4 hours
     "60 0.0"  # Below 60% SoC, do not run extra devices
 )
+	
 
 # -----------------------------------------------------------------------------
-# 96-point configuration (24h, 15-min intervals)
+# 96-point configuration (24h, 15-min intervals, static strategy)
 # -----------------------------------------------------------------------------
 # 1 = charge, 0 = no charge  (based on price rank 1–24, low→high)
 config_matrix96_charge=(
@@ -317,7 +336,7 @@ config_matrix96_charge=(
 0 0 0 0 0 0 0 0 0 0 0 0
 )
 
-# Smooth linear discharge curve from 96% → 10%
+# Smooth linear discharge curve from 96% → 10%, static strategy
 config_matrix96_discharge=(
 96 95 94 93 92 91 90 89 88 87 86 85
 84 83 82 81 80 79 78 77 76 75 74 73
@@ -329,7 +348,7 @@ config_matrix96_discharge=(
 12 11 10 10 10 10 10 10 10 10 10 10
 )
 
-# 1 = on, 0 = off  (for smart sockets)
+# 1 = on, 0 = off  (for smart sockets, static strategy)
 config_matrix96_fritzsocket=(
 1 1 1 1 1 1 1 1 1 1 1 1 
 0 0 0 0 0 0 0 0 0 0 0 0 
@@ -353,7 +372,7 @@ config_matrix96_shellysocket=(
 )
 
 # -----------------------------------------------------------------------------
-# 192-point configuration (48h, 15-min intervals, when include_second_day=1)
+# 192-point configuration (48h, 15-min intervals, when include_second_day=1, static strategy)
 # -----------------------------------------------------------------------------
 # 1 = charge, 0 = no charge
 config_matrix192_charge=(
@@ -367,7 +386,7 @@ config_matrix192_charge=(
 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 )
 
-# Smooth 0.5%-step discharge curve from 98% → 10%
+# Smooth 0.5%-step discharge curve from 98% → 10%, static strategy
 config_matrix192_discharge=(
 98 98 97 97 96 96 95 95 94 94 93 93 92 92 91 91 
 90 90 89 89 88 88 87 87 86 86 85 85 84 84 83 83 
@@ -383,7 +402,7 @@ config_matrix192_discharge=(
 10 10 10 10 10 10 10 10
 )
 
-# 1 = on, 0 = off (for smart sockets)
+# 1 = on, 0 = off (for smart sockets, static strategy)
 config_matrix192_fritzsocket=(
 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 
 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
@@ -404,12 +423,3 @@ config_matrix192_shellysocket=(
 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 )
 
-# Mini-Matrix for Dynamic SOC Based on Solar Energy:
-# This matrix defines dynamic target SoC values based on expected solar energy (in MJ/m²).
-config_matrix_target_soc_weather=(
-    "1.5 90"  # At 1.5 MJ/m², target SoC is 90%
-    "4.0 20"  # At 4.0 MJ/m², target SoC is 20%
-)
-# Note: # All the other values between this will be calculated automatically.
-# If the sun will be more than 4.0 megajoule, the 20% will still be used as calculation result.
-# If there will be enough sun, the battery capacity will be reserved for solar energy.
