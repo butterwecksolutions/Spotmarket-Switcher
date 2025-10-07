@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.4-DEV"
+VERSION="2.5.4"
 
 if [ -z "$LANG" ]; then
     export LANG="C"
@@ -13,7 +13,7 @@ update_crontab() {
         rm "$temp_cron"
         return
     fi
-    sed -i 's/^0 \* \* \* \* \(.*Spotmarket-Switcher\/controller\.sh\)$/\/*\/15 \* \* \* \* \1/' "$temp_cron"
+    sed -i 's/^0 \* \* \* \* \(.*Spotmarket-Switcher\/controller\.sh\)$/\*\/15 \* \* \* \* \1/' "$temp_cron"
 
     if grep -q "*/15 * * * * .*Spotmarket-Switcher/controller.sh" "$temp_cron"; then
         echo "Spotmarket-Switcher crontab entry successfully updated to 15-minute intervals."
