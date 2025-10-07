@@ -31,10 +31,10 @@ update_crontab
 #######################################
 
 if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
-    valid_config_version=12 # Please increase this value by 1 when changing the configuration variables
+    valid_config_version=14 # Please increase this value by 1 when changing the configuration variables
 else
     declare -A valid_vars=(
-    	["config_version"]="12" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
+    	["config_version"]="14" # Please increase this value by 1 if variables are added or deleted in the valid_vars array
         ["use_fritz_dect_sockets"]="0|1"
         ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
         ["user"]="string"
@@ -87,6 +87,10 @@ else
         ["sonnen_API_KEY"]="string"
         ["sonnen_API_URL"]="string"
         ["sonnen_minimum_SoC"]="^([0-9][0-9]?|100)$"
+	["fritz_socket_strategy"]="static|dynamic"
+	["fritz_socket_price_direction"]="highest|lowest"
+	["shelly_socket_strategy"]="static|dynamic"
+	["shelly_socket_price_direction"]="highest|lowest"
 		)
 
     declare -A config_values
@@ -100,7 +104,7 @@ parse_and_validate_config() {
     if [[ ${BASH_VERSINFO[0]} -le 4 ]]; then
         # Simplified validation for Bash <= 4 (e.g., macOS Bash 3.2)
         log_message >&2 "W: Due to the older Bash version, detailed configuration validation is skipped."
-        valid_config_version=12 # Match the new version requirement
+        valid_config_version=14 # Match the new version requirement
         while IFS='=' read -r key value; do
             key=$(echo "$key" | cut -d'#' -f1 | tr -d ' ')
             value=$(echo "$value" | awk -F'#' '{gsub(/^ *"|"$|^ *| *$/, "", $1); print $1}')
@@ -120,7 +124,7 @@ parse_and_validate_config() {
     else    
         # Advanced validation for Bash > 4
         declare -A valid_vars=(
-            ["config_version"]="13"
+            ["config_version"]="14"
             ["use_fritz_dect_sockets"]="0|1"
             ["fbox"]="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
             ["user"]="string"
@@ -173,6 +177,10 @@ parse_and_validate_config() {
             ["sonnen_API_KEY"]="string"
             ["sonnen_API_URL"]="string"
             ["sonnen_minimum_SoC"]="^([0-9][0-9]?|100)$"
+	["fritz_socket_strategy"]="static|dynamic"
+	["fritz_socket_price_direction"]="highest|lowest"
+	["shelly_socket_strategy"]="static|dynamic"
+	["shelly_socket_price_direction"]="highest|lowest"
         )
 
         declare -A config_values
@@ -211,7 +219,7 @@ parse_and_validate_config() {
             echo -e "$errors"
             return 1
         elif [[ "$version_valid" == false ]]; then
-            log_message >&2 "E: Error: config_version=12 is missing."
+            log_message >&2 "E: Error: config_version=14 is missing."
             return 1
         else
             echo "Config validation passed."
@@ -1329,8 +1337,7 @@ use_entsoe_api() {
                 sed -i "$((prices_per_day +1))d;$((prices_per_day *2 +1))d" "$file8"
                 sort -g "$file8" > "$file19"
                 echo "date_now_day: $today" >> "$file8"
-                log_message "D: Combined today ($file10) and tomorrow ($file13) into $file19."
-            else
+                log_message "D: Combined today ($file10) and tomorrow ($file13) into $file19."            else
                 log_message "D: Cached tomorrow data in $file13 is valid for $tomorrow."
                 # Combine cached today and tomorrow
                 cat "$file10" "$file13" > "$file8"
@@ -1923,11 +1930,17 @@ for idx in "${!sorted_prices[@]}"; do
     if (( use_fritz_dect_sockets == 1 )); then
         if [ "$fritz_socket_strategy" == "dynamic" ]; then
             num_slots=$(awk -v h="$fritz_hours" 'BEGIN {printf "%.0f", h * 4}')
-            start_idx=$(( ${#sorted_prices[@]} - num_slots ))
-            if (( idx >= start_idx )); then
-                fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+            if [ "$fritz_socket_price_direction" == "highest" ]; then
+                start_idx=$(( ${#sorted_prices[@]} - num_slots ))
+                if (( idx >= start_idx )); then
+                    fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+                fi
+            else # lowest
+                if (( idx < num_slots )); then
+                    fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
+                fi
             fi
-        else # Static
+        else # static
             if [ "$fritzsocket_value" -eq 1 ]; then
                 fritz_switchable_sockets_table="$fritz_switchable_sockets_table $i"
             fi
@@ -1938,11 +1951,17 @@ for idx in "${!sorted_prices[@]}"; do
     if (( use_shelly_wlan_sockets == 1 )); then
         if [ "$shelly_socket_strategy" == "dynamic" ]; then
             num_slots=$(awk -v h="$shelly_hours" 'BEGIN {printf "%.0f", h * 4}')
-            start_idx=$(( ${#sorted_prices[@]} - num_slots ))
-            if (( idx >= start_idx )); then
-                shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+            if [ "$shelly_socket_price_direction" == "highest" ]; then
+                start_idx=$(( ${#sorted_prices[@]} - num_slots ))
+                if (( idx >= start_idx )); then
+                    shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+                fi
+            else # lowest
+                if (( idx < num_slots )); then
+                    shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
+                fi
             fi
-        else # Static
+        else # static
             if [ "$shellysocket_value" -eq 1 ]; then
                 shelly_switchable_sockets_table="$shelly_switchable_sockets_table $i"
             fi
@@ -1968,8 +1987,12 @@ done
 log_message >&2 "I: Sorted prices (low to high): $price_table"
 log_message >&2 "I: Charge at price ranks:$charge_table"
 log_message >&2 "I: Discharge at price ranks (if SOC >= min):$discharge_table"
+if ((use_fritz_dect_sockets == 1)); then
 log_message >&2 "I: Fritz switchable sockets at price ranks:$fritz_switchable_sockets_table"
+fi
+if ((use_shelly_wlan_sockets == 1)); then
 log_message >&2 "I: Shelly switchable sockets at price ranks:$shelly_switchable_sockets_table"
+fi
 
 charging_condition_met=""
 discharging_condition_met=""
