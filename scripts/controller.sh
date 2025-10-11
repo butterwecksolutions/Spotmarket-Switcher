@@ -2037,66 +2037,84 @@ for i in "${!sorted_prices[@]}"; do
         fi
     fi
 
-    # Discharging conditions
-    if [ "$SOC_percent" -ge "${discharge_array[$((i-1))]}" ]; then
-        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
-            discharging_conditions+=(1)
-            discharging_descriptions+=("Discharge at price rank $i because SOC ($SOC_percent) >= ${discharge_array[$((i-1))]} and ${!price_var} ~= $current_price_integer")
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Discharge condition met at rank $i: SOC=$SOC_percent >= ${discharge_array[$((i-1))]}, Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+# Discharging conditions
+    if [ "$discharge_strategy" == "dynamic" ]; then
+        # Dynamic strategy: Check if the current price rank is in the calculated discharge table
+        if [[ " $discharge_table " =~ " $i " ]]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                discharging_conditions+=(1)
+                discharging_descriptions+=("Dynamic discharge at price rank $i")
+            else
+                discharging_conditions+=(0)
             fi
         else
             discharging_conditions+=(0)
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Discharge condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
-            fi
         fi
     else
-        discharging_conditions+=(0)
-        if [[ $DEBUG -eq 1 ]]; then
-            log_message "D: Discharge condition not met at rank $i: SOC=$SOC_percent < ${discharge_array[$((i-1))]}"
+        # Static strategy: Use the original logic with the static discharge_array
+        if [ "$SOC_percent" -ge "${discharge_array[$((i-1))]}" ]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                discharging_conditions+=(1)
+                discharging_descriptions+=("Static discharge at price rank $i because SOC ($SOC_percent) >= ${discharge_array[$((i-1))]}")
+            else
+                discharging_conditions+=(0)
+            fi
+        else
+            discharging_conditions+=(0)
         fi
     fi
 
-    # Fritz socket conditions
-    if [ "${fritzsocket_array[$((i-1))]}" -eq 1 ]; then
-        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
-            fritzsocket_conditions+=(1)
-            fritzsocket_conditions_descriptions+=("Fritz socket on at price rank $i because ${!price_var} ~= $current_price_integer")
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Fritz socket condition met at rank $i: Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+# Fritz socket conditions
+    if [ "$fritz_socket_strategy" == "dynamic" ]; then
+        # Dynamic strategy: Check if the current price rank is in the calculated sockets table
+        if [[ " $fritz_switchable_sockets_table " =~ " $i " ]]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                fritzsocket_conditions+=(1)
+                fritzsocket_conditions_descriptions+=("Dynamic Fritz socket on at price rank $i")
+            else
+                fritzsocket_conditions+=(0)
             fi
         else
             fritzsocket_conditions+=(0)
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Fritz socket condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
-            fi
         fi
     else
-        fritzsocket_conditions+=(0)
-        if [[ $DEBUG -eq 1 ]]; then
-            log_message "D: Fritz socket condition not met at rank $i: fritzsocket_array[$((i-1))]=${fritzsocket_array[$((i-1))]} != 1"
+        # Static strategy: Use the original logic
+        if [ "${fritzsocket_array[$((i-1))]}" -eq 1 ]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                fritzsocket_conditions+=(1)
+                fritzsocket_conditions_descriptions+=("Static Fritz socket on at price rank $i")
+            else
+                fritzsocket_conditions+=(0)
+            fi
+        else
+            fritzsocket_conditions+=(0)
         fi
     fi
 
-    # Shelly socket conditions
-    if [ "${shellysocket_array[$((i-1))]}" -eq 1 ]; then
-        if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
-            shellysocket_conditions+=(1)
-            shellysocket_conditions_descriptions+=("Shelly socket on at price rank $i because ${!price_var} ~= $current_price_integer")
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Shelly socket condition met at rank $i: Price=${!price_var} ~= $current_price_integer (diff=$price_diff)"
+# Shelly socket conditions
+    if [ "$shelly_socket_strategy" == "dynamic" ]; then
+        # Dynamic strategy: Check if the current price rank is in the calculated sockets table
+        if [[ " $shelly_switchable_sockets_table " =~ " $i " ]]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                shellysocket_conditions+=(1)
+                shellysocket_conditions_descriptions+=("Dynamic Shelly socket on at price rank $i")
+            else
+                shellysocket_conditions+=(0)
             fi
         else
             shellysocket_conditions+=(0)
-            if [[ $DEBUG -eq 1 ]]; then
-                log_message "D: Shelly socket condition not met at rank $i: Price mismatch (${!price_var} != $current_price_integer, diff=$price_diff)"
-            fi
         fi
     else
-        shellysocket_conditions+=(0)
-        if [[ $DEBUG -eq 1 ]]; then
-            log_message "D: Shelly socket condition not met at rank $i: shellysocket_array[$((i-1))]=${shellysocket_array[$((i-1))]} != 1"
+        # Static strategy: Use the original logic
+        if [ "${shellysocket_array[$((i-1))]}" -eq 1 ]; then
+            if [ "$price_diff" -ge -1 ] && [ "$price_diff" -le 1 ]; then
+                shellysocket_conditions+=(1)
+                shellysocket_conditions_descriptions+=("Static Shelly socket on at price rank $i")
+            else
+                shellysocket_conditions+=(0)
+            fi
+        else
+            shellysocket_conditions+=(0)
         fi
     fi
 done
